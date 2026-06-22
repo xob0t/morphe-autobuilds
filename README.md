@@ -4,19 +4,23 @@ Automatically rebuilds patched APKs whenever an upstream app ships a new version
 using the [Morphe](https://morphe.software) patcher and the
 [`xob0t/morphe-patches`](https://github.com/xob0t/morphe-patches) bundle.
 
-Each app has a rolling **`<app>-latest`** release that always holds the newest
-patched build. The patched APKs are re-signed with a stable per-app key, so updates
-install over previous Morphe builds without uninstalling.
+All apps publish to a **single rolling [`latest`](../../releases/tag/latest)
+release** that always holds the newest patched build of each app. Every build
+enables **all** compatible patches — app-specific **and** universal. The patched
+APKs are re-signed with a stable per-app key, so updates install over previous
+Morphe builds without uninstalling.
 
 > The patch step **is** the regression test: if an app update breaks a patch
 > fingerprint, `morphe-cli` exits non-zero, the build fails, and an issue is opened.
 
 ## Apps
 
-| App     | Source                                             | Release tag    |
-|---------|----------------------------------------------------|----------------|
-| Avito   | `https://www.avito.st/s/app/apk/avito.apk`         | `avito-latest` |
-| T-Bank  | `https://acdn.t-bank-app.ru/download_apk/tbank_app.apk` | `tbank-latest` |
+| App     | Source                                             |
+|---------|----------------------------------------------------|
+| Avito   | `https://www.avito.st/s/app/apk/avito.apk`         |
+| T-Bank  | `https://acdn.t-bank-app.ru/download_apk/tbank_app.apk` |
+
+All builds land in the single `latest` release as `<app>-<version>-morphe.apk`.
 
 Ozon and Wildberries have no official "latest APK" URL; they can be added once an
 alternative source (APKMirror / APKPure / RuStore) is wired into `config/apps.json`.
@@ -34,12 +38,15 @@ alternative source (APKMirror / APKPure / RuStore) is wired into `config/apps.js
    `patches-*.mpp`, then `morphe-cli patch …`. Failure here fails the job and opens
    a `[app] patch failing` issue.
 4. **Sign** — signed by `morphe-cli` with the app's stable keystore.
-5. **Publish** — create/update `<app>-latest`, upload the APK, and record
-   `versionCode` + `ETag`/`Content-Length` for the next run's change check.
+5. **Publish** — upload the APK + `state-<app>.json` to the shared `latest` release
+   (replacing the app's previous APK), then a final job refreshes the aggregated
+   release notes.
 
-Patch selection is empty (`patch_args: []`) by default, meaning **morphe-cli's
-default set** — this auto-includes new patches as the bundle evolves. Override per
-app in `config/apps.json` with `--enable=Name` / `--disable=Name`.
+**Patch selection: everything.** Each build runs `list-patches -f <package>` to get
+every compatible patch (app-specific + universal) and enables them all with
+`--exclusive --enable=…`. This is self-maintaining — new patches are picked up
+automatically. To keep a specific patch off for one app, add its name to that app's
+`disable` array in `config/apps.json`.
 
 ## Required secrets
 
@@ -70,9 +77,9 @@ Actions → **Auto-build patched APKs** → *Run workflow*:
 
 ## Adding an app
 
-Add an entry to `config/apps.json` (id, package, source url + UA, `release_tag`,
-`keystore_secret`, optional `patch_args`) and add the keystore secret. The app must
-have patches in the configured `patches_repo` bundle.
+Add an entry to `config/apps.json` (id, package, source url + UA, `keystore_secret`,
+optional `disable` list) and add the keystore secret. The app must have patches in
+the configured `patches_repo` bundle.
 
 ## Disclaimer
 

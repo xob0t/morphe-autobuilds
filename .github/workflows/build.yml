@@ -28,19 +28,28 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.gen.outputs.matrix }}
+      release_tag: ${{ steps.gen.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v4
       - id: gen
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WANT: ${{ github.event.inputs.app || 'all' }}
         run: |
           if [ "$WANT" = "all" ] || [ -z "$WANT" ]; then
-            M=$(jq -c '{include: [.apps[] | {id, name, keystore_secret, release_tag}]}' config/apps.json)
+            M=$(jq -c '{include: [.apps[] | {id, name, keystore_secret}]}' config/apps.json)
           else
-            M=$(jq -c --arg id "$WANT" '{include: [.apps[] | select(.id==$id) | {id, name, keystore_secret, release_tag}]}' config/apps.json)
+            M=$(jq -c --arg id "$WANT" '{include: [.apps[] | select(.id==$id) | {id, name, keystore_secret}]}' config/apps.json)
           fi
+          TAG=$(jq -r '.release_tag' config/apps.json)
+          TITLE=$(jq -r '.release_title // "Morphe patched APKs"' config/apps.json)
           echo "matrix=$M" >>"$GITHUB_OUTPUT"
+          echo "release_tag=$TAG" >>"$GITHUB_OUTPUT"
           echo "$M"
+          # Ensure the single rolling release exists so matrix jobs can upload to it.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TITLE" --notes "Building…"
+          fi
 
   build:
     needs: setup
@@ -100,6 +109,7 @@ jobs:
           APP_ID: ${{ matrix.id }}
           CONFIG: ${{ github.workspace }}/config/apps.json
           KEYSTORE: ${{ runner.temp }}/${{ matrix.id }}.keystore
+          RELEASE_TAG: ${{ needs.setup.outputs.release_tag }}
           FORCE: ${{ github.event.inputs.force || 'false' }}
         run: |
           export MORPHE_CLI=$(ls "${{ github.workspace }}"/tools/morphe-cli-*-all.jar | tail -1)
@@ -114,7 +124,7 @@ jobs:
         run: |
           BODY="morphe-cli failed to patch **${{ matrix.name }} ${{ steps.build.outputs.version }}** in run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}.
 
-          A patch fingerprint likely broke on the new app version. The rolling release was left unchanged."
+          A patch fingerprint likely broke on the new app version, or an enabled patch is incompatible. The release was left unchanged for this app."
           NUM=$(gh issue list --state open --search "in:title [${{ matrix.id }}] patch failing" --json number --jq '.[0].number')
           if [ -n "$NUM" ]; then
             gh issue comment "$NUM" --body "$BODY"
@@ -122,3 +132,16 @@ jobs:
             gh issue create --title "$TITLE" --body "$BODY" --label "patch-failure" 2>/dev/null \
               || gh issue create --title "$TITLE" --body "$BODY"
           fi
+
+  notes:
+    needs: [setup, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refresh release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONFIG: ${{ github.workspace }}/config/apps.json
+          RELEASE_TAG: ${{ needs.setup.outputs.release_tag }}
+        run: bash scripts/update_notes.sh
