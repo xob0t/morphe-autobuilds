@@ -24,12 +24,17 @@ Morphe builds without uninstalling.
 
 All builds land in the single `latest` release as `<app>-<version>-morphe.apk`.
 
-**Source types** (`source.type` in config):
-- `direct` — `source.url` is the APK; change detected via `ETag`/`Content-Length`.
+**Sources.** Each app has an ordered `sources` list, tried in turn until one resolves
+an APK — so a broken store *or* a broken vendor URL doesn't stop the build. RuStore is
+primary everywhere; Avito and T-Bank add their official direct URL as a fallback.
+
+Source types:
 - `rustore` — the official RU store's API: `overallInfo/<package>` → appId, then
   `v2/download-link` → a single non-split APK URL **and** the upstream `versionCode`.
   The versionCode is returned before downloading, so unchanged apps are skipped
   without fetching the (200–400 MB) APK. No auth/scraping; always the current version.
+- `direct` — `url` is the APK (the vendor's own CDN); validated with a HEAD before use,
+  change detected via `ETag`/`Content-Length`.
 
 ## How it works
 

@@ -34,36 +34,50 @@ app() { jq -er --arg id "$APP_ID" '.apps[] | select(.id==$id) | '"$1" "$CONFIG";
 
 NAME=$(app '.name')
 PACKAGE=$(app '.package')
-SRC_TYPE=$(jq -r --arg id "$APP_ID" '(.apps[]|select(.id==$id).source.type) // "direct"' "$CONFIG")
-UA=$(jq -r --arg id "$APP_ID" '(.apps[]|select(.id==$id).source.user_agent) // "Mozilla/5.0 (Linux; Android 13)"' "$CONFIG")
+UA="Mozilla/5.0 (Linux; Android 13)"
 mapfile -t DISABLE < <(jq -r --arg id "$APP_ID" '.apps[] | select(.id==$id) | .disable[]?' "$CONFIG")
 
-# Resolve the APK download URL (and, for stores that expose it, the upstream
-# versionCode) for the configured source type.
-#   direct  — source.url is the APK URL; change detected via ETag/Content-Length.
-#   rustore — RuStore store API (official RU store): overallInfo→appId, then
-#             download-link→{versionCode, single non-split APK url}. versionCode is
-#             returned up front, so we can skip without downloading.
-RS_VCODE=""
+# Resolve the APK download URL by trying the app's ordered `sources` list until one
+# works (resilience: store primary + direct-URL fallback). Sets SRC_URL, UA,
+# RESOLVED_TYPE, and — for rustore — RS_VCODE (the upstream versionCode, returned by
+# the API before any download, so unchanged apps can be skipped without fetching).
+#   direct  — sources[i].url is the APK; validated with a HEAD before committing.
+#   rustore — RuStore store API: overallInfo→appId, download-link→single non-split URL.
+RS_VCODE=""; RESOLVED_TYPE=""
+src() { jq -r --arg id "$APP_ID" --argjson i "$1" '.apps[]|select(.id==$id).sources['"$1"']'"$2" "$CONFIG"; }
 resolve_source() {
-  case "$SRC_TYPE" in
-    direct)
-      SRC_URL=$(app '.source.url') ;;
-    rustore)
-      local appid resp
-      appid=$(curl -fsS --retry 3 --max-time 30 \
-        "https://backapi.rustore.ru/applicationData/overallInfo/$PACKAGE" \
-        | jq -er '.body.appId')
-      resp=$(curl -fsS --retry 3 --max-time 30 -X POST \
-        "https://backapi.rustore.ru/applicationData/v2/download-link" \
-        -H "Content-Type: application/json" \
-        -d "{\"appId\":$appid,\"firstInstall\":true,\"withoutSplits\":true}")
-      SRC_URL=$(printf '%s' "$resp" | jq -er '.body.downloadUrls[0].url')
-      RS_VCODE=$(printf '%s' "$resp" | jq -er '.body.versionCode')
-      echo "RuStore appId=$appid versionCode=$RS_VCODE" ;;
-    *)
-      echo "::error::Unknown source.type '$SRC_TYPE' for $APP_ID" >&2; exit 1 ;;
-  esac
+  local n i type url ua appid resp
+  n=$(jq -r --arg id "$APP_ID" '.apps[]|select(.id==$id).sources|length' "$CONFIG")
+  for ((i=0; i<n; i++)); do
+    type=$(src "$i" '.type')
+    echo "Trying source #$((i+1))/$n: $type"
+    case "$type" in
+      direct)
+        url=$(src "$i" '.url')
+        ua=$(src "$i" '.user_agent // "Mozilla/5.0 (Linux; Android 13)"')
+        if curl -fsSIL -A "$ua" --max-time 30 "$url" >/dev/null 2>&1; then
+          RESOLVED_TYPE=direct; SRC_URL=$url; UA=$ua
+          echo "  using direct: $url"; return 0
+        fi
+        echo "  direct source unreachable" ;;
+      rustore)
+        if appid=$(curl -fsS --retry 2 --max-time 30 \
+              "https://backapi.rustore.ru/applicationData/overallInfo/$PACKAGE" 2>/dev/null \
+              | jq -er '.body.appId' 2>/dev/null) \
+           && resp=$(curl -fsS --retry 2 --max-time 30 -X POST \
+              "https://backapi.rustore.ru/applicationData/v2/download-link" \
+              -H "Content-Type: application/json" \
+              -d "{\"appId\":$appid,\"firstInstall\":true,\"withoutSplits\":true}" 2>/dev/null) \
+           && url=$(printf '%s' "$resp" | jq -er '.body.downloadUrls[0].url' 2>/dev/null); then
+          RESOLVED_TYPE=rustore; SRC_URL=$url
+          RS_VCODE=$(printf '%s' "$resp" | jq -er '.body.versionCode')
+          echo "  using RuStore: appId=$appid versionCode=$RS_VCODE"; return 0
+        fi
+        echo "  RuStore resolve failed" ;;
+      *) echo "  unknown source type '$type'" ;;
+    esac
+  done
+  echo "::error::All sources failed for $APP_ID" >&2; return 1
 }
 
 WORK="${RUNNER_TEMP:-/tmp}/$APP_ID"
@@ -89,7 +103,7 @@ log "$NAME: last built versionCode=$PREV_CODE"
 group "Resolve source + change check"
 resolve_source
 ETAG=""; LASTMOD=""; CLEN=""
-if [ "$SRC_TYPE" = "rustore" ]; then
+if [ "$RESOLVED_TYPE" = "rustore" ]; then
   # RuStore hands us the versionCode without downloading — the best change signal.
   if [ "$FORCE" != "true" ] && [ -n "$RS_VCODE" ] && [ "$RS_VCODE" -le "$PREV_CODE" ]; then
     endg; log "$NAME: RuStore versionCode $RS_VCODE not newer than $PREV_CODE — skipping."

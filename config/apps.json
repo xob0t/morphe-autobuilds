@@ -1,5 +1,5 @@
 {
-  "$comment": "Config for the Morphe auto-build pipeline. All apps publish to ONE rolling release (release_tag). Each build enables EVERY patch compatible with the app (app-specific + universal); list per-app exceptions in 'disable'.",
+  "$comment": "Config for the Morphe auto-build pipeline. All apps publish to ONE rolling release (release_tag). Each build enables EVERY patch compatible with the app (app-specific + universal); list per-app exceptions in 'disable'. Each app has an ordered 'sources' list tried in turn until one resolves an APK (resilience: primary store + direct-URL fallback).",
 
   "patches_repo": "xob0t/morphe-patches",
   "patches_use_prerelease": false,
@@ -14,12 +14,14 @@
       "name": "Avito",
       "package": "com.avito.android",
       "keystore_secret": "AVITO_KEYSTORE_B64",
-      "source": {
-        "type": "direct",
-        "url": "https://www.avito.st/s/app/apk/avito.apk",
-        "user_agent": "Mozilla/5.0 (Linux; Android 13; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-      },
-      "$disable_comment": "Patch names to keep OFF even though they're compatible. Empty = apply all.",
+      "sources": [
+        { "type": "rustore" },
+        {
+          "type": "direct",
+          "url": "https://www.avito.st/s/app/apk/avito.apk",
+          "user_agent": "Mozilla/5.0 (Linux; Android 13; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        }
+      ],
       "disable": []
     },
     {
@@ -27,11 +29,14 @@
       "name": "T-Bank",
       "package": "com.idamob.tinkoff.android",
       "keystore_secret": "TBANK_KEYSTORE_B64",
-      "source": {
-        "type": "direct",
-        "url": "https://acdn.t-bank-app.ru/download_apk/tbank_app.apk",
-        "user_agent": "Mozilla/5.0 (Linux; Android 13; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-      },
+      "sources": [
+        { "type": "rustore" },
+        {
+          "type": "direct",
+          "url": "https://acdn.t-bank-app.ru/download_apk/tbank_app.apk",
+          "user_agent": "Mozilla/5.0 (Linux; Android 13; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        }
+      ],
       "disable": []
     },
     {
@@ -39,8 +44,8 @@
       "name": "Ozon",
       "package": "ru.ozon.app.android",
       "keystore_secret": "OZON_KEYSTORE_B64",
-      "$source_comment": "No official APK URL; RuStore (official RU store) serves a single non-split APK and reports versionCode up front.",
-      "source": { "type": "rustore" },
+      "$sources_comment": "No official direct APK URL; RuStore only.",
+      "sources": [ { "type": "rustore" } ],
       "disable": []
     },
     {
@@ -48,7 +53,7 @@
       "name": "Wildberries",
       "package": "com.wildberries.ru",
       "keystore_secret": "WB_KEYSTORE_B64",
-      "source": { "type": "rustore" },
+      "sources": [ { "type": "rustore" } ],
       "disable": []
     }
   ]
