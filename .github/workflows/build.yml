@@ -111,10 +111,21 @@ jobs:
           KEYSTORE: ${{ runner.temp }}/${{ matrix.id }}.keystore
           RELEASE_TAG: ${{ needs.setup.outputs.release_tag }}
           FORCE: ${{ github.event.inputs.force || 'false' }}
+          STATE_OUT: ${{ runner.temp }}/state-${{ matrix.id }}.json
         run: |
           export MORPHE_CLI=$(ls "${{ github.workspace }}"/tools/morphe-cli-*-all.jar | tail -1)
           export MPP=$(ls "${{ github.workspace }}"/tools/patches-*.mpp | tail -1)
           bash scripts/build.sh
+
+      # Hand this app's state to the manifest job (only if it actually built).
+      - name: Upload state artifact
+        if: steps.build.outputs.built == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-${{ matrix.id }}
+          path: ${{ runner.temp }}/state-${{ matrix.id }}.json
+          if-no-files-found: ignore
+          retention-days: 2
 
       - name: Report patch failure
         if: failure() && steps.build.outputs.failed == 'true'
@@ -133,15 +144,25 @@ jobs:
               || gh issue create --title "$TITLE" --body "$BODY"
           fi
 
-  notes:
+  manifest:
     needs: [setup, build]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Refresh release notes
+      - name: Download state artifacts
+        # No artifacts on a no-change run — don't fail the job over it; manifest.sh
+        # then just refreshes notes from the existing manifest.
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          path: states
+          pattern: state-*
+          merge-multiple: true
+      - name: Build manifest.json + refresh notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONFIG: ${{ github.workspace }}/config/apps.json
           RELEASE_TAG: ${{ needs.setup.outputs.release_tag }}
-        run: bash scripts/update_notes.sh
+          STATES_DIR: ${{ github.workspace }}/states
+        run: bash scripts/manifest.sh

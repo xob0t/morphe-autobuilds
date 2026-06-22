@@ -83,18 +83,20 @@ resolve_source() {
 WORK="${RUNNER_TEMP:-/tmp}/$APP_ID"
 mkdir -p "$WORK"
 APK="$WORK/original.apk"
-STATE_ASSET="state-$APP_ID.json"
+# Per-app state is written here and handed to the manifest job as a workflow
+# artifact (STATE_OUT, set by the workflow). The release keeps only manifest.json.
+STATE_FILE="${STATE_OUT:-$WORK/state-$APP_ID.json}"
 
-# ---- 1. recorded state from the rolling release ------------------------------
+# ---- 1. recorded state from the consolidated manifest.json -------------------
 PREV_CODE=0
 PREV_ETAG=""
 PREV_LEN=""
 if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-  if gh release download "$RELEASE_TAG" -p "$STATE_ASSET" -D "$WORK" --clobber 2>/dev/null; then
-    # Tolerate a missing/old/malformed prior state file (don't let jq abort set -e).
-    PREV_CODE=$(jq -r '.version_code // 0' "$WORK/$STATE_ASSET" 2>/dev/null || echo 0)
-    PREV_ETAG=$(jq -r '.etag // ""' "$WORK/$STATE_ASSET" 2>/dev/null || echo "")
-    PREV_LEN=$(jq -r '.content_length // ""' "$WORK/$STATE_ASSET" 2>/dev/null || echo "")
+  if gh release download "$RELEASE_TAG" -p manifest.json -D "$WORK" --clobber 2>/dev/null; then
+    # Tolerate a missing/old/malformed manifest (don't let jq abort set -e).
+    PREV_CODE=$(jq -r --arg id "$APP_ID" '.apps[$id].version_code // 0' "$WORK/manifest.json" 2>/dev/null || echo 0)
+    PREV_ETAG=$(jq -r --arg id "$APP_ID" '.apps[$id].etag // ""' "$WORK/manifest.json" 2>/dev/null || echo "")
+    PREV_LEN=$(jq -r --arg id "$APP_ID" '.apps[$id].content_length // ""' "$WORK/manifest.json" 2>/dev/null || echo "")
   fi
 fi
 log "$NAME: last built versionCode=$PREV_CODE"
@@ -189,19 +191,23 @@ if [ $RC -ne 0 ]; then
 fi
 ls -lh "$OUT"
 
-# ---- 6. publish to the single rolling release --------------------------------
+# ---- 6. publish APK + record per-app state -----------------------------------
+# The APK goes to the shared release now; the per-app state is written to STATE_FILE
+# and handed to the manifest job as a workflow artifact, which merges every app into
+# one manifest.json — so the release holds only the APKs + manifest.json.
 MPP_VER=$(basename "$MPP" | sed -E 's/^patches-(.*)\.mpp$/\1/')
 BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 jq -n \
   --arg app "$APP_ID" --arg name "$NAME" --arg pkg "$PACKAGE" \
   --arg vn "$VNAME" --argjson vc "${VCODE:-0}" \
   --arg etag "$ETAG" --arg lm "$LASTMOD" --arg clen "$CLEN" \
+  --arg src "$RESOLVED_TYPE" \
   --arg pv "$MPP_VER" --argjson pe "${#ENABLE_ARGS[@]}" \
   --arg asset "$(basename "$OUT")" --arg built "$BUILT_AT" \
   '{app:$app, name:$name, package:$pkg, version_name:$vn, version_code:$vc,
-    etag:$etag, last_modified:$lm, content_length:$clen,
+    etag:$etag, last_modified:$lm, content_length:$clen, source:$src,
     patches_version:$pv, patches_enabled:$pe, asset:$asset, built_at:$built}' \
-  >"$WORK/$STATE_ASSET"
+  >"$STATE_FILE"
 
 # Drop any previous APK for THIS app (different version name) so only the current
 # build per app remains in the shared release. `|| true` so "no matches" (fresh
@@ -215,9 +221,9 @@ for old in $OLD_ASSETS; do
     gh release delete-asset "$RELEASE_TAG" "$old" --yes || true
   fi
 done
-gh release upload "$RELEASE_TAG" "$OUT" "$WORK/$STATE_ASSET" --clobber
+gh release upload "$RELEASE_TAG" "$OUT" --clobber
 endg
 
-log "$NAME: published $VNAME ($(printf '%s' "${#ENABLE_ARGS[@]}") patches) to release '$RELEASE_TAG'."
+log "$NAME: published $VNAME ($(printf '%s' "${#ENABLE_ARGS[@]}") patches, via $RESOLVED_TYPE) to release '$RELEASE_TAG'."
 out built true
 out version "$VNAME"

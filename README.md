@@ -49,9 +49,11 @@ Source types:
    `patches-*.mpp`, then `morphe-cli patch …`. Failure here fails the job and opens
    a `[app] patch failing` issue.
 4. **Sign** — signed by `morphe-cli` with the app's stable keystore.
-5. **Publish** — upload the APK + `state-<app>.json` to the shared `latest` release
-   (replacing the app's previous APK), then a final job refreshes the aggregated
-   release notes.
+5. **Publish** — upload the APK to the shared `latest` release (replacing the app's
+   previous APK). Each app's build state is passed as a workflow artifact to a final
+   job that merges them into a single **`manifest.json`** on the release and refreshes
+   the notes. So the release holds only the APKs + one `manifest.json` (per-app
+   version, versionCode, source, patch count, build time).
 
 **Patch selection: everything.** Each build runs `list-patches -f <package>` to get
 every compatible patch (app-specific + universal) and enables them all with
