@@ -33,18 +33,20 @@ NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 jq -n --arg now "$NOW" --argjson apps "$APPS" \
   '{schema: 1, updated_at: $now, apps: $apps}' >"$WORK/manifest.json"
 
-# Notes table, rendered from the manifest (sorted by app name).
+# Notes table, rendered from the manifest (sorted by app name). The version cell
+# links straight to that app's APK asset on this release.
 N="$WORK/notes.md"
+DL="../../releases/download/$RELEASE_TAG"
 {
-  echo "Auto-built APKs patched with [Morphe](https://morphe.software) — **every** compatible patch enabled (app-specific + universal). Rebuilt automatically whenever an app ships a new version."
+  echo "Latest [Morphe](https://morphe.software)-patched APKs, rebuilt automatically whenever an app **or** the patches bundle updates. **Every** compatible patch is enabled (app-specific + universal); APKs are re-signed with a stable per-app key so updates install over previous Morphe builds."
   echo
-  echo "| App | Version | Patches | Source | Bundle | Built (UTC) |"
-  echo "|-----|---------|:------:|:------:|--------|-------------|"
-  jq -r '.apps | to_entries | sort_by(.value.name)[] | .value
-         | "| \(.name) | `\(.version_name)` | \(.patches_enabled) | \(.source // "?") | `\(.patches_version)` | \(.built_at) |"' \
+  echo "| App | Version | Download | Patches | Source | Bundle | Built (UTC) |"
+  echo "|-----|---------|:-------:|:------:|:------:|--------|-------------|"
+  jq -r --arg dl "$DL" '.apps | to_entries | sort_by(.value.name)[] | .value
+         | "| \(.name) | `\(.version_name)` | [⬇ APK](\($dl)/\(.asset)) | \(.patches_enabled) | \(.source // "?") | `\(.patches_version)` | \(.built_at) |"' \
      "$WORK/manifest.json"
   echo
-  echo "APKs are unmodified upstream binaries from each app's source (RuStore, or the vendor's own CDN), patched and re-signed with a stable per-app key so updates install over previous Morphe builds. Per-build details: [\`manifest.json\`](../../releases/download/$RELEASE_TAG/manifest.json). Patches: [xob0t/morphe-patches](https://github.com/xob0t/morphe-patches)."
+  echo "Each APK is the unmodified upstream binary (from RuStore or the vendor's own CDN), patched and re-signed. Machine-readable details: [\`manifest.json\`]($DL/manifest.json). Patches: [xob0t/morphe-patches](https://github.com/xob0t/morphe-patches)."
   echo
   echo "<sub>Updated $NOW.</sub>"
 } >"$N"

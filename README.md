@@ -1,8 +1,8 @@
 # Morphe auto-builds
 
-Automatically rebuilds patched APKs whenever an upstream app ships a new version,
-using the [Morphe](https://morphe.software) patcher and the
-[`xob0t/morphe-patches`](https://github.com/xob0t/morphe-patches) bundle.
+Automatically rebuilds patched APKs whenever an upstream app **or** the
+[`xob0t/morphe-patches`](https://github.com/xob0t/morphe-patches) bundle ships a new
+version, using the [Morphe](https://morphe.software) patcher.
 
 All apps publish to a **single rolling [`latest`](../../releases/tag/latest)
 release** that always holds the newest patched build of each app. Every build
@@ -10,17 +10,19 @@ enables **all** compatible patches — app-specific **and** universal. The patch
 APKs are re-signed with a stable per-app key, so updates install over previous
 Morphe builds without uninstalling.
 
-> The patch step **is** the regression test: if an app update breaks a patch
-> fingerprint, `morphe-cli` exits non-zero, the build fails, and an issue is opened.
+> The patch step **is** the regression test: the app-specific patches require their
+> ad surfaces to be present (no silent skips), so if an app update moves a surface or
+> breaks a fingerprint, `morphe-cli` exits non-zero, the build fails, and an issue is
+> opened instead of quietly shipping a half-patched APK.
 
 ## Apps
 
-| App         | Source                                               |
-|-------------|------------------------------------------------------|
-| Avito       | direct: `avito.st/s/app/apk/avito.apk`               |
-| T-Bank      | direct: `acdn.t-bank-app.ru/download_apk/tbank_app.apk` |
-| Ozon        | RuStore store API (no official direct URL)           |
-| Wildberries | RuStore store API (no official direct URL)           |
+| App         | Primary source     | Fallback                              |
+|-------------|--------------------|---------------------------------------|
+| Avito       | RuStore store API  | `avito.st/s/app/apk/avito.apk`        |
+| T-Bank      | RuStore store API  | `acdn.t-bank-app.ru/download_apk/tbank_app.apk` |
+| Ozon        | RuStore store API  | — (no official direct URL)            |
+| Wildberries | RuStore store API  | — (no official direct URL)            |
 
 All builds land in the single `latest` release as `<app>-<version>-morphe.apk`.
 
@@ -49,8 +51,8 @@ the upstream app version **or** the Morphe patches bundle changed since its last
 2. **Download & version** — fetch the APK (browser User-Agent) and read
    `versionCode`/`versionName` with the runner's `aapt2`. Skip if not newer.
 3. **Patch** — download the latest `morphe-cli` and the latest stable
-   `patches-*.mpp`, then `morphe-cli patch …`. Failure here fails the job and opens
-   a `[app] patch failing` issue.
+   `patches-*.mpp`, then `morphe-cli patch …`. Failure here fails the job and opens a
+   `<App> <version>: patch "<name>" failed` issue (see [failure reporting](#optional-file-failures-on-the-patches-repo)).
 4. **Sign** — signed by `morphe-cli` with the app's stable keystore.
 5. **Publish** — upload the APK to the shared `latest` release (replacing the app's
    previous APK). Each app's build state is passed as a workflow artifact to a final
