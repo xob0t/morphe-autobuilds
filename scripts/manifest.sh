@@ -20,11 +20,13 @@ if [ -f "$WORK/manifest.json" ] && jq -e '.apps' "$WORK/manifest.json" >/dev/nul
 fi
 
 # Overlay each freshly-built app's state, keyed by its id.
+UPDATED=0
 shopt -s nullglob
 for f in "$STATES_DIR"/state-*.json; do
   jq -e . "$f" >/dev/null 2>&1 || { echo "skip malformed $f"; continue; }
   id=$(jq -r '.app' "$f")
   APPS=$(jq -c --arg id "$id" --slurpfile s "$f" '.[$id] = $s[0]' <<<"$APPS")
+  UPDATED=$((UPDATED + 1))
   echo "manifest: updated $id"
 done
 shopt -u nullglob
@@ -58,5 +60,19 @@ gh release upload "$RELEASE_TAG" "$WORK/manifest.json" --clobber
 LEGACY=$(gh release view "$RELEASE_TAG" --json assets -q '.assets[].name' 2>/dev/null \
   | grep -E '^state-.*\.json$' || true)
 for a in $LEGACY; do echo "Deleting legacy asset $a"; gh release delete-asset "$RELEASE_TAG" "$a" --yes || true; done
+
+# GitHub freezes a release's published_at at first publish — uploading assets or
+# editing notes never moves it, so the release looks stale. When something actually
+# built this run, bump it to "now" by re-publishing (draft off→on), keeping the
+# Latest flag. Skipped on no-op runs so the date reflects real updates only.
+if [ "$UPDATED" -gt 0 ]; then
+  REPO="${GITHUB_REPOSITORY:?}"
+  RID=$(gh api "repos/$REPO/releases/tags/$RELEASE_TAG" --jq '.id')
+  gh api -X PATCH "repos/$REPO/releases/$RID" -F draft=true >/dev/null
+  gh api -X PATCH "repos/$REPO/releases/$RID" -F draft=false -f make_latest=true >/dev/null
+  echo "Re-published '$RELEASE_TAG' ($UPDATED app(s) updated) — published_at bumped to now."
+else
+  echo "No apps updated this run — leaving release date unchanged."
+fi
 
 echo "manifest.json updated for '$RELEASE_TAG'."

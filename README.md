@@ -58,7 +58,10 @@ the upstream app version **or** the Morphe patches bundle changed since its last
    previous APK). Each app's build state is passed as a workflow artifact to a final
    job that merges them into a single **`manifest.json`** on the release and refreshes
    the notes. So the release holds only the APKs + one `manifest.json` (per-app
-   version, versionCode, source, patch count, build time).
+   version, versionCode, source, patch count, build time). When at least one app
+   actually built, the release is re-published (draft off→on) so its date reflects the
+   update — GitHub otherwise freezes a release's date at first publish. No-op runs
+   leave the date untouched.
 
 **Patch selection: everything.** Each build runs `list-patches -f <package>` to get
 every compatible patch (app-specific + universal) and enables them all with
