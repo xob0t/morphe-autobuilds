@@ -155,13 +155,17 @@ cat >"$WORK/$STATE_ASSET" <<EOF
 EOF
 
 # Drop any previous APK for THIS app (different version name) so only the current
-# build per app remains in the shared release.
+# build per app remains in the shared release. `|| true` so "no matches" (fresh
+# release) doesn't trip `set -e`/pipefail.
 group "Publish"
-gh release view "$RELEASE_TAG" --json assets -q '.assets[].name' 2>/dev/null \
-  | grep -E "^${APP_ID}-.*-morphe\.apk$" | grep -vF "$(basename "$OUT")" \
-  | while read -r old; do
-      [ -n "$old" ] && { echo "Deleting old asset $old"; gh release delete-asset "$RELEASE_TAG" "$old" --yes || true; }
-    done
+OLD_ASSETS=$(gh release view "$RELEASE_TAG" --json assets -q '.assets[].name' 2>/dev/null \
+  | grep -E "^${APP_ID}-.*-morphe\.apk$" || true)
+for old in $OLD_ASSETS; do
+  if [ "$old" != "$(basename "$OUT")" ]; then
+    echo "Deleting old asset $old"
+    gh release delete-asset "$RELEASE_TAG" "$old" --yes || true
+  fi
+done
 gh release upload "$RELEASE_TAG" "$OUT" "$WORK/$STATE_ASSET" --clobber
 endg
 
