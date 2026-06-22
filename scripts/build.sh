@@ -77,9 +77,10 @@ PREV_ETAG=""
 PREV_LEN=""
 if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
   if gh release download "$RELEASE_TAG" -p "$STATE_ASSET" -D "$WORK" --clobber 2>/dev/null; then
-    PREV_CODE=$(jq -r '.version_code // 0' "$WORK/$STATE_ASSET")
-    PREV_ETAG=$(jq -r '.etag // ""' "$WORK/$STATE_ASSET")
-    PREV_LEN=$(jq -r '.content_length // ""' "$WORK/$STATE_ASSET")
+    # Tolerate a missing/old/malformed prior state file (don't let jq abort set -e).
+    PREV_CODE=$(jq -r '.version_code // 0' "$WORK/$STATE_ASSET" 2>/dev/null || echo 0)
+    PREV_ETAG=$(jq -r '.etag // ""' "$WORK/$STATE_ASSET" 2>/dev/null || echo "")
+    PREV_LEN=$(jq -r '.content_length // ""' "$WORK/$STATE_ASSET" 2>/dev/null || echo "")
   fi
 fi
 log "$NAME: last built versionCode=$PREV_CODE"
