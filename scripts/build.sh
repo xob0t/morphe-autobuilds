@@ -34,9 +34,37 @@ app() { jq -er --arg id "$APP_ID" '.apps[] | select(.id==$id) | '"$1" "$CONFIG";
 
 NAME=$(app '.name')
 PACKAGE=$(app '.package')
-SRC_URL=$(app '.source.url')
-UA=$(app '.source.user_agent')
+SRC_TYPE=$(jq -r --arg id "$APP_ID" '(.apps[]|select(.id==$id).source.type) // "direct"' "$CONFIG")
+UA=$(jq -r --arg id "$APP_ID" '(.apps[]|select(.id==$id).source.user_agent) // "Mozilla/5.0 (Linux; Android 13)"' "$CONFIG")
 mapfile -t DISABLE < <(jq -r --arg id "$APP_ID" '.apps[] | select(.id==$id) | .disable[]?' "$CONFIG")
+
+# Resolve the APK download URL (and, for stores that expose it, the upstream
+# versionCode) for the configured source type.
+#   direct  — source.url is the APK URL; change detected via ETag/Content-Length.
+#   rustore — RuStore store API (official RU store): overallInfo→appId, then
+#             download-link→{versionCode, single non-split APK url}. versionCode is
+#             returned up front, so we can skip without downloading.
+RS_VCODE=""
+resolve_source() {
+  case "$SRC_TYPE" in
+    direct)
+      SRC_URL=$(app '.source.url') ;;
+    rustore)
+      local appid resp
+      appid=$(curl -fsS --retry 3 --max-time 30 \
+        "https://backapi.rustore.ru/applicationData/overallInfo/$PACKAGE" \
+        | jq -er '.body.appId')
+      resp=$(curl -fsS --retry 3 --max-time 30 -X POST \
+        "https://backapi.rustore.ru/applicationData/v2/download-link" \
+        -H "Content-Type: application/json" \
+        -d "{\"appId\":$appid,\"firstInstall\":true,\"withoutSplits\":true}")
+      SRC_URL=$(printf '%s' "$resp" | jq -er '.body.downloadUrls[0].url')
+      RS_VCODE=$(printf '%s' "$resp" | jq -er '.body.versionCode')
+      echo "RuStore appId=$appid versionCode=$RS_VCODE" ;;
+    *)
+      echo "::error::Unknown source.type '$SRC_TYPE' for $APP_ID" >&2; exit 1 ;;
+  esac
+}
 
 WORK="${RUNNER_TEMP:-/tmp}/$APP_ID"
 mkdir -p "$WORK"
@@ -56,22 +84,34 @@ if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
 fi
 log "$NAME: last built versionCode=$PREV_CODE"
 
-# ---- 2. cheap change check via ETag / Content-Length -------------------------
-group "Change check"
-HEADERS=$(curl -fsSIL -A "$UA" "$SRC_URL" 2>/dev/null || true)
-ETAG=$(printf '%s' "$HEADERS" | tr -d '\r' | awk -F': ' 'tolower($1)=="etag"{print $2}' | tail -1)
-LASTMOD=$(printf '%s' "$HEADERS" | tr -d '\r' | awk -F': ' 'tolower($1)=="last-modified"{print $2}' | tail -1)
-CLEN=$(printf '%s' "$HEADERS" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-length"{print $2}' | tail -1)
-echo "etag=$ETAG last-modified=$LASTMOD content-length=$CLEN"
-endg
-if [ "$FORCE" != "true" ]; then
-  if [ -n "$ETAG" ] && [ "$ETAG" = "$PREV_ETAG" ]; then
-    log "$NAME: source unchanged (ETag match) — skipping."; out built false; exit 0
+# ---- 2. resolve source + cheap change check ----------------------------------
+group "Resolve source + change check"
+resolve_source
+ETAG=""; LASTMOD=""; CLEN=""
+if [ "$SRC_TYPE" = "rustore" ]; then
+  # RuStore hands us the versionCode without downloading — the best change signal.
+  if [ "$FORCE" != "true" ] && [ -n "$RS_VCODE" ] && [ "$RS_VCODE" -le "$PREV_CODE" ]; then
+    endg; log "$NAME: RuStore versionCode $RS_VCODE not newer than $PREV_CODE — skipping."
+    out built false; exit 0
   fi
-  if [ -z "$ETAG" ] && [ -n "$CLEN" ] && [ "$CLEN" = "$PREV_LEN" ]; then
-    log "$NAME: source unchanged (Content-Length match) — skipping."; out built false; exit 0
+else
+  HEADERS=$(curl -fsSIL -A "$UA" "$SRC_URL" 2>/dev/null || true)
+  # ETag values arrive wrapped in literal double-quotes (and may be weak: W/"…");
+  # strip quotes so the value is JSON-safe and compares cleanly run-to-run.
+  ETAG=$(printf '%s' "$HEADERS" | tr -d '\r' | awk -F': ' 'tolower($1)=="etag"{print $2}' | tail -1 | tr -d '"')
+  LASTMOD=$(printf '%s' "$HEADERS" | tr -d '\r' | awk -F': ' 'tolower($1)=="last-modified"{print $2}' | tail -1)
+  CLEN=$(printf '%s' "$HEADERS" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-length"{print $2}' | tail -1)
+  echo "etag=$ETAG last-modified=$LASTMOD content-length=$CLEN"
+  if [ "$FORCE" != "true" ]; then
+    if [ -n "$ETAG" ] && [ "$ETAG" = "$PREV_ETAG" ]; then
+      endg; log "$NAME: source unchanged (ETag match) — skipping."; out built false; exit 0
+    fi
+    if [ -z "$ETAG" ] && [ -n "$CLEN" ] && [ "$CLEN" = "$PREV_LEN" ]; then
+      endg; log "$NAME: source unchanged (Content-Length match) — skipping."; out built false; exit 0
+    fi
   fi
 fi
+endg
 
 # ---- 3. download + read version ----------------------------------------------
 group "Download $NAME"
@@ -137,22 +177,16 @@ ls -lh "$OUT"
 # ---- 6. publish to the single rolling release --------------------------------
 MPP_VER=$(basename "$MPP" | sed -E 's/^patches-(.*)\.mpp$/\1/')
 BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-cat >"$WORK/$STATE_ASSET" <<EOF
-{
-  "app": "$APP_ID",
-  "name": "$NAME",
-  "package": "$PACKAGE",
-  "version_name": "$VNAME",
-  "version_code": ${VCODE:-0},
-  "etag": "${ETAG}",
-  "last_modified": "${LASTMOD}",
-  "content_length": "${CLEN}",
-  "patches_version": "$MPP_VER",
-  "patches_enabled": ${#ENABLE_ARGS[@]},
-  "asset": "$(basename "$OUT")",
-  "built_at": "$BUILT_AT"
-}
-EOF
+jq -n \
+  --arg app "$APP_ID" --arg name "$NAME" --arg pkg "$PACKAGE" \
+  --arg vn "$VNAME" --argjson vc "${VCODE:-0}" \
+  --arg etag "$ETAG" --arg lm "$LASTMOD" --arg clen "$CLEN" \
+  --arg pv "$MPP_VER" --argjson pe "${#ENABLE_ARGS[@]}" \
+  --arg asset "$(basename "$OUT")" --arg built "$BUILT_AT" \
+  '{app:$app, name:$name, package:$pkg, version_name:$vn, version_code:$vc,
+    etag:$etag, last_modified:$lm, content_length:$clen,
+    patches_version:$pv, patches_enabled:$pe, asset:$asset, built_at:$built}' \
+  >"$WORK/$STATE_ASSET"
 
 # Drop any previous APK for THIS app (different version name) so only the current
 # build per app remains in the shared release. `|| true` so "no matches" (fresh

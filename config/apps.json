@@ -33,6 +33,23 @@
         "user_agent": "Mozilla/5.0 (Linux; Android 13; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
       },
       "disable": []
+    },
+    {
+      "id": "ozon",
+      "name": "Ozon",
+      "package": "ru.ozon.app.android",
+      "keystore_secret": "OZON_KEYSTORE_B64",
+      "$source_comment": "No official APK URL; RuStore (official RU store) serves a single non-split APK and reports versionCode up front.",
+      "source": { "type": "rustore" },
+      "disable": []
+    },
+    {
+      "id": "wildberries",
+      "name": "Wildberries",
+      "package": "com.wildberries.ru",
+      "keystore_secret": "WB_KEYSTORE_B64",
+      "source": { "type": "rustore" },
+      "disable": []
     }
   ]
 }

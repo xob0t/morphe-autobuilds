@@ -15,15 +15,21 @@ Morphe builds without uninstalling.
 
 ## Apps
 
-| App     | Source                                             |
-|---------|----------------------------------------------------|
-| Avito   | `https://www.avito.st/s/app/apk/avito.apk`         |
-| T-Bank  | `https://acdn.t-bank-app.ru/download_apk/tbank_app.apk` |
+| App         | Source                                               |
+|-------------|------------------------------------------------------|
+| Avito       | direct: `avito.st/s/app/apk/avito.apk`               |
+| T-Bank      | direct: `acdn.t-bank-app.ru/download_apk/tbank_app.apk` |
+| Ozon        | RuStore store API (no official direct URL)           |
+| Wildberries | RuStore store API (no official direct URL)           |
 
 All builds land in the single `latest` release as `<app>-<version>-morphe.apk`.
 
-Ozon and Wildberries have no official "latest APK" URL; they can be added once an
-alternative source (APKMirror / APKPure / RuStore) is wired into `config/apps.json`.
+**Source types** (`source.type` in config):
+- `direct` — `source.url` is the APK; change detected via `ETag`/`Content-Length`.
+- `rustore` — the official RU store's API: `overallInfo/<package>` → appId, then
+  `v2/download-link` → a single non-split APK URL **and** the upstream `versionCode`.
+  The versionCode is returned before downloading, so unchanged apps are skipped
+  without fetching the (200–400 MB) APK. No auth/scraping; always the current version.
 
 ## How it works
 
@@ -53,10 +59,12 @@ automatically. To keep a specific patch off for one app, add its name to that ap
 Each app needs its signing keystore as a base64 secret (referenced by
 `keystore_secret` in `config/apps.json`):
 
-| Secret               | App    |
-|----------------------|--------|
-| `AVITO_KEYSTORE_B64` | Avito  |
-| `TBANK_KEYSTORE_B64` | T-Bank |
+| Secret               | App         |
+|----------------------|-------------|
+| `AVITO_KEYSTORE_B64` | Avito       |
+| `TBANK_KEYSTORE_B64` | T-Bank      |
+| `OZON_KEYSTORE_B64`  | Ozon        |
+| `WB_KEYSTORE_B64`    | Wildberries |
 
 Create from a keystore file:
 
