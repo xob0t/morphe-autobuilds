@@ -2,8 +2,13 @@ name: Auto-build patched APKs
 
 on:
   schedule:
-    # Daily at 06:00 UTC. Each app is built only if its upstream version changed.
+    # Daily at 06:00 UTC. Each app rebuilds if its upstream version OR the patches
+    # bundle changed since its last build.
     - cron: '0 6 * * *'
+  # Lets the patches repo (or anything with a PAT) kick a build the moment a new
+  # patches release ships — see README. Payload is ignored; the per-app checks decide.
+  repository_dispatch:
+    types: [patches-released]
   workflow_dispatch:
     inputs:
       app:

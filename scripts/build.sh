@@ -91,15 +91,29 @@ STATE_FILE="${STATE_OUT:-$WORK/state-$APP_ID.json}"
 PREV_CODE=0
 PREV_ETAG=""
 PREV_LEN=""
+PREV_PATCHES=""
 if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
   if gh release download "$RELEASE_TAG" -p manifest.json -D "$WORK" --clobber 2>/dev/null; then
     # Tolerate a missing/old/malformed manifest (don't let jq abort set -e).
     PREV_CODE=$(jq -r --arg id "$APP_ID" '.apps[$id].version_code // 0' "$WORK/manifest.json" 2>/dev/null || echo 0)
     PREV_ETAG=$(jq -r --arg id "$APP_ID" '.apps[$id].etag // ""' "$WORK/manifest.json" 2>/dev/null || echo "")
     PREV_LEN=$(jq -r --arg id "$APP_ID" '.apps[$id].content_length // ""' "$WORK/manifest.json" 2>/dev/null || echo "")
+    PREV_PATCHES=$(jq -r --arg id "$APP_ID" '.apps[$id].patches_version // ""' "$WORK/manifest.json" 2>/dev/null || echo "")
   fi
 fi
-log "$NAME: last built versionCode=$PREV_CODE"
+
+# Rebuild when forced, or when the patches bundle changed since this app's last
+# build (so a new patches release refreshes every app, not just ones whose app
+# version moved). Otherwise the version/ETag change-checks below decide.
+CUR_PATCHES=$(basename "$MPP" | sed -E 's/^patches-(.*)\.mpp$/\1/')
+REBUILD=false
+if [ "$FORCE" = "true" ]; then
+  REBUILD=true
+elif [ -n "$PREV_PATCHES" ] && [ "$CUR_PATCHES" != "$PREV_PATCHES" ]; then
+  REBUILD=true
+  log "$NAME: patches bundle changed ($PREV_PATCHES → $CUR_PATCHES) — will rebuild."
+fi
+log "$NAME: last built versionCode=$PREV_CODE on patches $PREV_PATCHES (current $CUR_PATCHES)."
 
 # ---- 2. resolve source + cheap change check ----------------------------------
 group "Resolve source + change check"
@@ -107,8 +121,8 @@ resolve_source
 ETAG=""; LASTMOD=""; CLEN=""
 if [ "$RESOLVED_TYPE" = "rustore" ]; then
   # RuStore hands us the versionCode without downloading — the best change signal.
-  if [ "$FORCE" != "true" ] && [ -n "$RS_VCODE" ] && [ "$RS_VCODE" -le "$PREV_CODE" ]; then
-    endg; log "$NAME: RuStore versionCode $RS_VCODE not newer than $PREV_CODE — skipping."
+  if [ "$REBUILD" != "true" ] && [ -n "$RS_VCODE" ] && [ "$RS_VCODE" -le "$PREV_CODE" ]; then
+    endg; log "$NAME: RuStore versionCode $RS_VCODE not newer than $PREV_CODE, patches unchanged — skipping."
     out built false; exit 0
   fi
 else
@@ -119,12 +133,12 @@ else
   LASTMOD=$(printf '%s' "$HEADERS" | tr -d '\r' | awk -F': ' 'tolower($1)=="last-modified"{print $2}' | tail -1)
   CLEN=$(printf '%s' "$HEADERS" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-length"{print $2}' | tail -1)
   echo "etag=$ETAG last-modified=$LASTMOD content-length=$CLEN"
-  if [ "$FORCE" != "true" ]; then
+  if [ "$REBUILD" != "true" ]; then
     if [ -n "$ETAG" ] && [ "$ETAG" = "$PREV_ETAG" ]; then
-      endg; log "$NAME: source unchanged (ETag match) — skipping."; out built false; exit 0
+      endg; log "$NAME: source unchanged (ETag match), patches unchanged — skipping."; out built false; exit 0
     fi
     if [ -z "$ETAG" ] && [ -n "$CLEN" ] && [ "$CLEN" = "$PREV_LEN" ]; then
-      endg; log "$NAME: source unchanged (Content-Length match) — skipping."; out built false; exit 0
+      endg; log "$NAME: source unchanged (Content-Length match), patches unchanged — skipping."; out built false; exit 0
     fi
   fi
 fi
@@ -147,8 +161,8 @@ if [ "$PKG" != "$PACKAGE" ]; then
   echo "::error::Downloaded package '$PKG' != expected '$PACKAGE' — source URL may have changed." >&2
   exit 1
 fi
-if [ "$FORCE" != "true" ] && [ "${VCODE:-0}" -le "$PREV_CODE" ]; then
-  log "$NAME: versionCode $VCODE not newer than $PREV_CODE — skipping."; out built false; exit 0
+if [ "$REBUILD" != "true" ] && [ "${VCODE:-0}" -le "$PREV_CODE" ]; then
+  log "$NAME: versionCode $VCODE not newer than $PREV_CODE, patches unchanged — skipping."; out built false; exit 0
 fi
 
 # ---- 4. enable EVERY compatible patch (app-specific + universal) -------------

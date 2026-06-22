@@ -38,11 +38,14 @@ Source types:
 
 ## How it works
 
-`.github/workflows/build.yml` runs daily (06:00 UTC) and on manual dispatch. Per app:
+`.github/workflows/build.yml` runs daily (06:00 UTC), on manual dispatch, and on a
+`repository_dispatch` of type `patches-released`. Per app it rebuilds when **either**
+the upstream app version **or** the Morphe patches bundle changed since its last build:
 
-1. **Change check** — `HEAD` the source URL; if its `ETag` (T-Bank) or
-   `Content-Length` (Avito) matches the value recorded in the current release, skip
-   without downloading.
+1. **Change check** — rebuild if the bundle version differs from the app's last build
+   (`patches_version` in the manifest). Otherwise check the source: RuStore returns the
+   `versionCode` up front; for direct URLs, `HEAD` and compare `ETag`/`Content-Length`.
+   If nothing changed, skip without downloading.
 2. **Download & version** — fetch the APK (browser User-Agent) and read
    `versionCode`/`versionName` with the runner's `aapt2`. Skip if not newer.
 3. **Patch** — download the latest `morphe-cli` and the latest stable
@@ -97,6 +100,17 @@ Actions → **Auto-build patched APKs** → *Run workflow*:
 
 - `app` — an id from `config/apps.json`, or `all` (default).
 - `force` — build even if the upstream version is unchanged.
+
+## Build on a new patches release (optional, immediate)
+
+The daily cron already picks up a new patches bundle within 24h. To rebuild the
+moment a patches release ships, have the patches repo dispatch this workflow — add a
+step to its release workflow (needs a PAT with `actions:write`/`contents:write` here):
+
+```bash
+gh api repos/<owner>/morphe-autobuilds/dispatches \
+  -f event_type=patches-released
+```
 
 ## Adding an app
 
