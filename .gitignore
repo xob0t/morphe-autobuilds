@@ -1,0 +1,6 @@
+# build artifacts / downloads — nothing build-time is committed
+tools/
+*.apk
+*.mpp
+*.keystore
+work/

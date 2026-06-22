@@ -1,0 +1,124 @@
+name: Auto-build patched APKs
+
+on:
+  schedule:
+    # Daily at 06:00 UTC. Each app is built only if its upstream version changed.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      app:
+        description: 'App id to build (from config/apps.json), or "all"'
+        default: 'all'
+        type: string
+      force:
+        description: 'Build even if the upstream version is unchanged'
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: autobuild-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: gen
+        env:
+          WANT: ${{ github.event.inputs.app || 'all' }}
+        run: |
+          if [ "$WANT" = "all" ] || [ -z "$WANT" ]; then
+            M=$(jq -c '{include: [.apps[] | {id, name, keystore_secret, release_tag}]}' config/apps.json)
+          else
+            M=$(jq -c --arg id "$WANT" '{include: [.apps[] | select(.id==$id) | {id, name, keystore_secret, release_tag}]}' config/apps.json)
+          fi
+          echo "matrix=$M" >>"$GITHUB_OUTPUT"
+          echo "$M"
+
+  build:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Resolve patch bundle tag
+        id: mpp
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO=$(jq -r '.patches_repo' config/apps.json)
+          PRE=$(jq -r '.patches_use_prerelease' config/apps.json)
+          if [ "$PRE" = "true" ]; then
+            TAG=$(gh release list --repo "$REPO" --limit 1 --json tagName --jq '.[0].tagName')
+          else
+            TAG=$(gh release list --repo "$REPO" --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName')
+          fi
+          echo "repo=$REPO" >>"$GITHUB_OUTPUT"
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "Patches: $REPO @ $TAG"
+
+      - name: Download morphe-cli + patches bundle
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p tools
+          CLI_REPO=$(jq -r '.cli_repo' config/apps.json)
+          gh release download --repo "$CLI_REPO" --pattern '*-all.jar' --dir tools --clobber
+          gh release download "${{ steps.mpp.outputs.tag }}" --repo "${{ steps.mpp.outputs.repo }}" --pattern 'patches-*.mpp' --dir tools --clobber
+          ls -lh tools
+
+      - name: Decode signing keystore
+        env:
+          KS_B64: ${{ secrets[matrix.keystore_secret] }}
+        run: |
+          if [ -z "$KS_B64" ]; then
+            echo "::error::Secret ${{ matrix.keystore_secret }} is empty — add it to repo secrets." >&2
+            exit 1
+          fi
+          echo "$KS_B64" | base64 -d > "${RUNNER_TEMP}/${{ matrix.id }}.keystore"
+
+      - name: Build ${{ matrix.name }}
+        id: build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_ID: ${{ matrix.id }}
+          CONFIG: ${{ github.workspace }}/config/apps.json
+          KEYSTORE: ${{ runner.temp }}/${{ matrix.id }}.keystore
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          export MORPHE_CLI=$(ls "${{ github.workspace }}"/tools/morphe-cli-*-all.jar | tail -1)
+          export MPP=$(ls "${{ github.workspace }}"/tools/patches-*.mpp | tail -1)
+          bash scripts/build.sh
+
+      - name: Report patch failure
+        if: failure() && steps.build.outputs.failed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: "[${{ matrix.id }}] patch failing on ${{ steps.build.outputs.version }}"
+        run: |
+          BODY="morphe-cli failed to patch **${{ matrix.name }} ${{ steps.build.outputs.version }}** in run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}.
+
+          A patch fingerprint likely broke on the new app version. The rolling release was left unchanged."
+          NUM=$(gh issue list --state open --search "in:title [${{ matrix.id }}] patch failing" --json number --jq '.[0].number')
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY" --label "patch-failure" 2>/dev/null \
+              || gh issue create --title "$TITLE" --body "$BODY"
+          fi

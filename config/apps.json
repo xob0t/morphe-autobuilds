@@ -1,0 +1,37 @@
+{
+  "$comment": "Configuration for the Morphe auto-build pipeline. Sources, patch repo and CLI repo. Edit 'apps' to add/remove targets.",
+
+  "patches_repo": "xob0t/morphe-patches",
+  "patches_use_prerelease": false,
+  "cli_repo": "MorpheApp/morphe-cli",
+
+  "apps": [
+    {
+      "id": "avito",
+      "name": "Avito",
+      "package": "com.avito.android",
+      "release_tag": "avito-latest",
+      "keystore_secret": "AVITO_KEYSTORE_B64",
+      "source": {
+        "type": "direct",
+        "url": "https://www.avito.st/s/app/apk/avito.apk",
+        "user_agent": "Mozilla/5.0 (Linux; Android 13; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+      },
+      "$patch_args_comment": "Empty = morphe-cli default selection (all default-enabled patches). This auto-includes new patches as the bundle evolves. Add '--enable=Name'/'--disable=Name' to override.",
+      "patch_args": []
+    },
+    {
+      "id": "tbank",
+      "name": "T-Bank",
+      "package": "com.idamob.tinkoff.android",
+      "release_tag": "tbank-latest",
+      "keystore_secret": "TBANK_KEYSTORE_B64",
+      "source": {
+        "type": "direct",
+        "url": "https://acdn.t-bank-app.ru/download_apk/tbank_app.apk",
+        "user_agent": "Mozilla/5.0 (Linux; Android 13; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+      },
+      "patch_args": []
+    }
+  ]
+}
