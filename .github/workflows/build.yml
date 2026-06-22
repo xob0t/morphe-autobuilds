@@ -127,21 +127,41 @@ jobs:
           if-no-files-found: ignore
           retention-days: 2
 
+      # A patch failure means a patch went stale against a new app version — so the
+      # issue is filed on the PATCHES repo when a PAT with access is provided
+      # (secret PATCHES_REPO_TOKEN), otherwise on this repo as a fallback. De-duplicated
+      # per app+version+failed-patch so a daily re-run comments instead of re-filing.
       - name: Report patch failure
         if: failure() && steps.build.outputs.failed == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TITLE: "[${{ matrix.id }}] patch failing on ${{ steps.build.outputs.version }}"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PATCHES_TOKEN: ${{ secrets.PATCHES_REPO_TOKEN }}
+          APP: ${{ matrix.name }}
+          VERSION: ${{ steps.build.outputs.version }}
+          FAILED: ${{ steps.build.outputs.failed_patches }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          BODY="morphe-cli failed to patch **${{ matrix.name }} ${{ steps.build.outputs.version }}** in run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}.
-
-          A patch fingerprint likely broke on the new app version, or an enabled patch is incompatible. The release was left unchanged for this app."
-          NUM=$(gh issue list --state open --search "in:title [${{ matrix.id }}] patch failing" --json number --jq '.[0].number')
-          if [ -n "$NUM" ]; then
-            gh issue comment "$NUM" --body "$BODY"
+          PATCHES_REPO=$(jq -r '.patches_repo' config/apps.json)
+          if [ -n "$PATCHES_TOKEN" ]; then
+            REPO="$PATCHES_REPO"; export GH_TOKEN="$PATCHES_TOKEN"
           else
-            gh issue create --title "$TITLE" --body "$BODY" --label "patch-failure" 2>/dev/null \
-              || gh issue create --title "$TITLE" --body "$BODY"
+            REPO="${{ github.repository }}"; export GH_TOKEN="$GITHUB_TOKEN"
+            echo "::warning::No PATCHES_REPO_TOKEN secret — filing on $REPO instead of $PATCHES_REPO."
+          fi
+          TITLE="$APP $VERSION: patch \"$FAILED\" failed"
+          BODY="Auto-build of **$APP $VERSION** failed: patch \`$FAILED\` no longer applies (a fingerprint/layout likely moved in this app version). The published APK was left unchanged.
+
+          - Failed patch(es): \`$FAILED\`
+          - App version: \`$VERSION\`
+          - Build run: $RUN_URL
+
+          _Filed automatically by [morphe-autobuilds](${{ github.server_url }}/${{ github.repository }})._"
+          NUM=$(gh issue list --repo "$REPO" --state open --search "in:title \"$APP $VERSION: patch\"" --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --repo "$REPO" --body "Still failing as of $RUN_URL"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY" --label "patch-failure" 2>/dev/null \
+              || gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY"
           fi
 
   manifest:

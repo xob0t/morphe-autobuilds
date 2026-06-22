@@ -83,6 +83,14 @@ base64 -w0 tbank-morphe.keystore | gh secret set TBANK_KEYSTORE_B64
 The keystore is morphe-cli's own format; no password is needed (morphe-cli signs
 with `--keystore` alone). Keep these keys stable so update installs don't break.
 
+### Optional: file failures on the patches repo
+
+When a build fails because a patch went stale against a new app version, an issue is
+opened naming the app, version and failed patch. By default it's filed on **this**
+repo. To file it on the **patches** repo instead (where the fix belongs), add a PAT
+with `issues:write` on `patches_repo` as the secret **`PATCHES_REPO_TOKEN`**. Without
+it, reporting falls back to this repo. Issues are de-duplicated per app+version.
+
 ## Manual run
 
 Actions → **Auto-build patched APKs** → *Run workflow*:

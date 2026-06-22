@@ -186,8 +186,10 @@ RC=$?
 set -e
 endg
 if [ $RC -ne 0 ]; then
-  echo "::error::$NAME $VNAME failed to patch (rc=$RC). A patch fingerprint likely broke on the new app version." >&2
-  out built false; out failed true; out version "$VNAME"; exit $RC
+  # Name the patch(es) morphe-cli reported as failed (strict mode stops at the first).
+  FAILED=$(jq -r '.failedPatches[]? | (.name // .)' "$WORK/result.json" 2>/dev/null | paste -sd, - || true)
+  echo "::error::$NAME $VNAME failed to patch (rc=$RC). Failed patch(es): ${FAILED:-unknown}." >&2
+  out built false; out failed true; out version "$VNAME"; out failed_patches "${FAILED:-unknown}"; exit $RC
 fi
 ls -lh "$OUT"
 
