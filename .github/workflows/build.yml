@@ -153,7 +153,8 @@ jobs:
             REPO="${{ github.repository }}"; export GH_TOKEN="$GITHUB_TOKEN"
             echo "::warning::No PATCHES_REPO_TOKEN secret — filing on $REPO instead of $PATCHES_REPO."
           fi
-          TITLE="$APP $VERSION: patch \"$FAILED\" failed"
+          FAILED_TITLE=$(printf '%s' "${FAILED:-unknown}" | tr '\n\r' '  ' | cut -c1-120)
+          TITLE="$APP $VERSION: patch \"$FAILED_TITLE\" failed"
           BODY="Auto-build of **$APP $VERSION** failed: patch \`$FAILED\` no longer applies (a fingerprint/layout likely moved in this app version). The published APK was left unchanged.
 
           - Failed patch(es): \`$FAILED\`
