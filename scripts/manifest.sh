@@ -5,9 +5,14 @@
 # (one state-<id>.json each) downloaded into STATES_DIR by the manifest job. Apps not
 # rebuilt this run keep their previous manifest entry.
 #
-# Required env: CONFIG, RELEASE_TAG, GH_TOKEN. Optional: STATES_DIR (default "states").
+# Required env: CONFIG, GH_TOKEN. Optional: RELEASE_TAG, STATES_DIR (default "states").
 set -euo pipefail
-CONFIG="${CONFIG:?}"; RELEASE_TAG="${RELEASE_TAG:?}"
+CONFIG="${CONFIG:?}"
+RELEASE_TAG="${RELEASE_TAG:-$(jq -r '.release_tag // empty' "$CONFIG")}"
+if [ -z "$RELEASE_TAG" ]; then
+  echo "manifest: RELEASE_TAG is empty and config has no release_tag" >&2
+  exit 1
+fi
 STATES_DIR="${STATES_DIR:-states}"
 TITLE=$(jq -r '.release_title // "Morphe patched APKs"' "$CONFIG")
 WORK="${RUNNER_TEMP:-/tmp}/manifest"; mkdir -p "$WORK"
