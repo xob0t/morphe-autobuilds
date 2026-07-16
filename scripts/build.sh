@@ -46,7 +46,7 @@ mapfile -t DISABLE < <(jq -r --arg id "$APP_ID" '.apps[] | select(.id==$id) | .d
 RS_VCODE=""; RESOLVED_TYPE=""
 src() { jq -r --arg id "$APP_ID" --argjson i "$1" '.apps[]|select(.id==$id).sources['"$1"']'"$2" "$CONFIG"; }
 resolve_source() {
-  local n i type url ua appid resp
+  local n i type url ua appid resp rs_device_id rs_ver
   n=$(jq -r --arg id "$APP_ID" '.apps[]|select(.id==$id).sources|length' "$CONFIG")
   for ((i=0; i<n; i++)); do
     type=$(src "$i" '.type')
@@ -61,11 +61,21 @@ resolve_source() {
         fi
         echo "  direct source unreachable" ;;
       rustore)
-        if appid=$(curl -fsS --retry 2 --max-time 30 \
+        rs_device_id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null \
+          || printf '%s-%s' "$RANDOM$RANDOM" "$RANDOM$RANDOM")
+        if rs_ver=$(curl -fsS --retry 2 --max-time 30 \
+              -H "deviceId: $rs_device_id" \
+              "https://backapi.rustore.ru/rustore-info/new-version" 2>/dev/null \
+              | jq -er '.body.latestVersion' 2>/dev/null) \
+           && appid=$(curl -fsS --retry 2 --max-time 30 \
+              -H "deviceId: $rs_device_id" \
+              -H "ruStoreVerCode: $rs_ver" \
               "https://backapi.rustore.ru/applicationData/overallInfo/$PACKAGE" 2>/dev/null \
               | jq -er '.body.appId' 2>/dev/null) \
            && resp=$(curl -fsS --retry 2 --max-time 30 -X POST \
               "https://backapi.rustore.ru/applicationData/v2/download-link" \
+              -H "deviceId: $rs_device_id" \
+              -H "ruStoreVerCode: $rs_ver" \
               -H "Content-Type: application/json" \
               -d "{\"appId\":$appid,\"firstInstall\":true,\"withoutSplits\":true}" 2>/dev/null) \
            && url=$(printf '%s' "$resp" | jq -er '.body.downloadUrls[0].url' 2>/dev/null); then

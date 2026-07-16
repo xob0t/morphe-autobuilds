@@ -118,7 +118,7 @@ jobs:
           FORCE: ${{ github.event.inputs.force || 'false' }}
           STATE_OUT: ${{ runner.temp }}/state-${{ matrix.id }}.json
         run: |
-          export MORPHE_CLI=$(ls "${{ github.workspace }}"/tools/morphe-cli-*-all.jar | tail -1)
+          export MORPHE_CLI=$(ls "${{ github.workspace }}"/tools/morphe-desktop-*-all.jar | tail -1)
           export MPP=$(ls "${{ github.workspace }}"/tools/patches-*.mpp | tail -1)
           bash scripts/build.sh
 
