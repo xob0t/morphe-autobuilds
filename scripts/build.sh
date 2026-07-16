@@ -158,6 +158,30 @@ endg
 group "Download $NAME"
 curl -fL --retry 3 --retry-delay 5 -A "$UA" -o "$APK" "$SRC_URL"
 ls -lh "$APK"
+
+# RuStore may wrap the installable APK with ART baseline profiles in an outer ZIP.
+# Keep a normal APK unchanged; otherwise require and extract exactly one APK entry.
+if [ "$RESOLVED_TYPE" = "rustore" ]; then
+  if ! ZIP_ENTRIES=$(unzip -Z1 "$APK" 2>/dev/null); then
+    echo "::error::RuStore download is neither an APK nor a readable ZIP archive." >&2
+    exit 1
+  fi
+  if ! grep -Fxq 'AndroidManifest.xml' <<<"$ZIP_ENTRIES"; then
+    mapfile -t WRAPPED_APKS < <(printf '%s\n' "$ZIP_ENTRIES" | awk 'tolower($0) ~ /\.apk$/')
+    if [ "${#WRAPPED_APKS[@]}" -ne 1 ]; then
+      echo "::error::RuStore wrapper contains ${#WRAPPED_APKS[@]} APK entries; expected exactly one." >&2
+      exit 1
+    fi
+    EXTRACTED_APK="$WORK/rustore-extracted.apk"
+    if ! unzip -p "$APK" "${WRAPPED_APKS[0]}" >"$EXTRACTED_APK" || [ ! -s "$EXTRACTED_APK" ]; then
+      echo "::error::Failed to extract APK from RuStore wrapper." >&2
+      exit 1
+    fi
+    mv "$EXTRACTED_APK" "$APK"
+    echo "Extracted RuStore APK: ${WRAPPED_APKS[0]}"
+    ls -lh "$APK"
+  fi
+fi
 endg
 
 AAPT2=$(ls "$ANDROID_SDK_ROOT"/build-tools/*/aapt2 2>/dev/null | sort -V | tail -1)
