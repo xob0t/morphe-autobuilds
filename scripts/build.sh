@@ -214,7 +214,7 @@ for p in "${ALL_PATCHES[@]}"; do
   ENABLE_ARGS+=(--enable="$p")
   ENABLED_PATCH_COUNT=$((ENABLED_PATCH_COUNT + 1))
   # Normal users keep best-effort hooks. CI opts into the patches' built-in strict
-  # modes so required Avito hook drift aborts instead of shipping silently. Morphe
+  # modes so required app hook drift aborts instead of shipping silently. Morphe
   # CLI groups option arguments with the preceding --enable argument.
   if [ "$PACKAGE" = "com.avito.android" ] && [ "$p" = "UI tweaks" ]; then
     ENABLE_ARGS+=(-OstrictFavoritesTabs=true)
@@ -223,6 +223,16 @@ for p in "${ALL_PATCHES[@]}"; do
     ENABLE_ARGS+=(-OstrictHooks=true)
   fi
   if [ "$PACKAGE" = "com.avito.android" ] && [ "$p" = "Disable telemetry" ]; then
+    ENABLE_ARGS+=(-OstrictTargets=true)
+  fi
+  if [ "$PACKAGE" = "ru.ozon.app.android" ] && [ "$p" = "Remove Ozon ads" ]; then
+    ENABLE_ARGS+=(-OstrictTargets=true)
+  fi
+  if [ "$PACKAGE" = "com.wildberries.ru" ] && [ "$p" = "Remove Wildberries ads" ]; then
+    ENABLE_ARGS+=(-OstrictTargets=true)
+  fi
+  if [ "$PACKAGE" = "com.idamob.tinkoff.android" ] && \
+     { [ "$p" = "Remove TBank ads" ] || [ "$p" = "Bypass anti-tamper" ]; }; then
     ENABLE_ARGS+=(-OstrictTargets=true)
   fi
 done
