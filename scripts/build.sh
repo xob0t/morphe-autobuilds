@@ -206,13 +206,20 @@ if [ "${#ALL_PATCHES[@]}" -eq 0 ]; then
   echo "::error::No patches found compatible with $PACKAGE in the bundle." >&2; exit 1
 fi
 ENABLE_ARGS=()
+ENABLED_PATCH_COUNT=0
 for p in "${ALL_PATCHES[@]}"; do
   skip=false
   for d in "${DISABLE[@]}"; do [ "$p" = "$d" ] && skip=true && break; done
   $skip && { echo "config-disabled: $p"; continue; }
   ENABLE_ARGS+=(--enable="$p")
+  ENABLED_PATCH_COUNT=$((ENABLED_PATCH_COUNT + 1))
+  # Normal users get best-effort UI tweaks. CI opts into the patch's built-in
+  # strict mode so a moved Favorites-tab hook aborts instead of shipping silently.
+  if [ "$PACKAGE" = "com.avito.android" ] && [ "$p" = "UI tweaks" ]; then
+    ENABLE_ARGS+=(-OstrictFavoritesTabs=true)
+  fi
 done
-echo "Enabling ${#ENABLE_ARGS[@]} of ${#ALL_PATCHES[@]} compatible patches."
+echo "Enabling $ENABLED_PATCH_COUNT of ${#ALL_PATCHES[@]} compatible patches."
 endg
 
 # ---- 5. patch (this is the test) ---------------------------------------------
@@ -252,7 +259,7 @@ jq -n \
   --arg vn "$VNAME" --argjson vc "${VCODE:-0}" \
   --arg etag "$ETAG" --arg lm "$LASTMOD" --arg clen "$CLEN" \
   --arg src "$RESOLVED_TYPE" \
-  --arg pv "$MPP_VER" --argjson pe "${#ENABLE_ARGS[@]}" \
+  --arg pv "$MPP_VER" --argjson pe "$ENABLED_PATCH_COUNT" \
   --arg asset "$(basename "$OUT")" --arg built "$BUILT_AT" \
   '{app:$app, name:$name, package:$pkg, version_name:$vn, version_code:$vc,
     etag:$etag, last_modified:$lm, content_length:$clen, source:$src,
@@ -274,6 +281,6 @@ done
 gh release upload "$RELEASE_TAG" "$OUT" --clobber
 endg
 
-log "$NAME: published $VNAME ($(printf '%s' "${#ENABLE_ARGS[@]}") patches, via $RESOLVED_TYPE) to release '$RELEASE_TAG'."
+log "$NAME: published $VNAME ($ENABLED_PATCH_COUNT patches, via $RESOLVED_TYPE) to release '$RELEASE_TAG'."
 out built true
 out version "$VNAME"
