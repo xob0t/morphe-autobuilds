@@ -213,10 +213,17 @@ for p in "${ALL_PATCHES[@]}"; do
   $skip && { echo "config-disabled: $p"; continue; }
   ENABLE_ARGS+=(--enable="$p")
   ENABLED_PATCH_COUNT=$((ENABLED_PATCH_COUNT + 1))
-  # Normal users get best-effort UI tweaks. CI opts into the patch's built-in
-  # strict mode so a moved Favorites-tab hook aborts instead of shipping silently.
+  # Normal users keep best-effort hooks. CI opts into the patches' built-in strict
+  # modes so required Avito hook drift aborts instead of shipping silently. Morphe
+  # CLI groups option arguments with the preceding --enable argument.
   if [ "$PACKAGE" = "com.avito.android" ] && [ "$p" = "UI tweaks" ]; then
     ENABLE_ARGS+=(-OstrictFavoritesTabs=true)
+  fi
+  if [ "$PACKAGE" = "com.avito.android" ] && [ "$p" = "Morphe settings" ]; then
+    ENABLE_ARGS+=(-OstrictHooks=true)
+  fi
+  if [ "$PACKAGE" = "com.avito.android" ] && [ "$p" = "Disable telemetry" ]; then
+    ENABLE_ARGS+=(-OstrictTargets=true)
   fi
 done
 echo "Enabling $ENABLED_PATCH_COUNT of ${#ALL_PATCHES[@]} compatible patches."

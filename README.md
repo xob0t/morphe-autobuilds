@@ -14,8 +14,8 @@ Morphe builds without uninstalling.
 > ad surfaces to be present (no silent skips), so if an app update moves a surface or
 > breaks a fingerprint, `morphe-cli` exits non-zero, the build fails, and an issue is
 > opened instead of quietly shipping a half-patched APK.
-> Avito's `UI tweaks` patch remains best-effort for normal users; this pipeline opts
-> into its built-in `strictFavoritesTabs` option so a missing Favorites hook is fatal here.
+> Avito's UI, settings, and telemetry hooks remain best-effort for normal users; this
+> pipeline opts into their built-in strict options so a moved required hook is fatal here.
 
 ## Apps
 
