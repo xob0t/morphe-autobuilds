@@ -102,8 +102,8 @@ with `--keystore` alone). Keep these keys stable so update installs don't break.
 
 Install one GitHub App on both `xob0t/morphe-autobuilds` and
 `xob0t/morphe-patches`, with repository **Contents: read/write** and **Pull
-requests: read/write**. Add its App ID and private key to both repositories as
-`PROMOTION_APP_ID` and `PROMOTION_APP_PRIVATE_KEY`.
+requests: read/write**, plus **Issues: read/write**. Add its App ID and private key
+to both repositories as `PROMOTION_APP_ID` and `PROMOTION_APP_PRIVATE_KEY`.
 
 On `morphe-patches`:
 
@@ -115,17 +115,17 @@ On `morphe-patches`:
   Semantic-release authenticates as the App for its generated release commit; target
   promotion still uses ordinary `--auto` merging and therefore waits for `Build`.
 
-The App token exists only in dedicated promotion and release/dispatch steps. The
-repository-owned target editing script runs with that token removed from its
-environment.
+The App token exists only in dedicated failure-reporting, promotion, and
+release/dispatch steps. In this workflow, each token is restricted to the
+permissions its step needs. The repository-owned target editing script runs with
+that token removed from its environment.
 
-### Optional: file failures on the patches repo
+### Patch failures on the patches repo
 
 When a build fails because a patch went stale against a new app version, an issue is
-opened naming the app, version and failed patch. By default it's filed on **this**
-repo. To file it on the **patches** repo instead (where the fix belongs), add a PAT
-with `issues:write` on `patches_repo` as the secret **`PATCHES_REPO_TOKEN`**. Without
-it, reporting falls back to this repo. Issues are de-duplicated per app+version.
+opened on `patches_repo`, naming the app, version and failed patch. The workflow
+uses a short-lived GitHub App token restricted to **Issues: write**; no PAT or
+fallback repository is used. Issues are de-duplicated per app+version.
 
 ## Manual run
 

@@ -169,27 +169,31 @@ jobs:
         with:
           subject-path: ${{ runner.temp }}/qualification-${{ matrix.id }}.json
 
-      # A patch failure means a patch went stale against a new app version — so the
-      # issue is filed on the PATCHES repo when a PAT with access is provided
-      # (secret PATCHES_REPO_TOKEN), otherwise on this repo as a fallback. De-duplicated
-      # per app+version+failed-patch so a daily re-run comments instead of re-filing.
-      - name: Report patch failure
+      # A patch failure means a patch went stale against a new app version. Use a
+      # short-lived, issue-only App token for the patches repo, where the fix belongs.
+      - name: Create patch-failure token
         if: failure() && steps.build.outputs.failed == 'true'
+        id: patch-failure-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.PROMOTION_APP_ID }}
+          private-key: ${{ secrets.PROMOTION_APP_PRIVATE_KEY }}
+          owner: xob0t
+          repositories: morphe-patches
+          permission-issues: write
+
+      # De-duplicated per app+version+failed-patch so a daily re-run comments
+      # instead of re-filing.
+      - name: Report patch failure
+        if: failure() && steps.build.outputs.failed == 'true' && steps.patch-failure-token.outcome == 'success'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PATCHES_TOKEN: ${{ secrets.PATCHES_REPO_TOKEN }}
+          GH_TOKEN: ${{ steps.patch-failure-token.outputs.token }}
           APP: ${{ matrix.name }}
           VERSION: ${{ steps.build.outputs.version }}
           FAILED: ${{ steps.build.outputs.failed_patches }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           PATCHES_REPO=$(jq -r '.patches_repo' config/apps.json)
-          if [ -n "$PATCHES_TOKEN" ]; then
-            REPO="$PATCHES_REPO"; export GH_TOKEN="$PATCHES_TOKEN"
-          else
-            REPO="${{ github.repository }}"; export GH_TOKEN="$GITHUB_TOKEN"
-            echo "::warning::No PATCHES_REPO_TOKEN secret — filing on $REPO instead of $PATCHES_REPO."
-          fi
           FAILED_TITLE=$(printf '%s' "${FAILED:-unknown}" | tr '\n\r' '  ' | cut -c1-120)
           TITLE="$APP $VERSION: patch \"$FAILED_TITLE\" failed"
           BODY="Auto-build of **$APP $VERSION** failed: patch \`$FAILED\` no longer applies (a fingerprint/layout likely moved in this app version). The published APK was left unchanged.
@@ -199,12 +203,12 @@ jobs:
           - Build run: $RUN_URL
 
           _Filed automatically by [morphe-autobuilds](${{ github.server_url }}/${{ github.repository }})._"
-          NUM=$(gh issue list --repo "$REPO" --state open --search "in:title \"$APP $VERSION: patch\"" --json number --jq '.[0].number' 2>/dev/null || true)
+          NUM=$(gh issue list --repo "$PATCHES_REPO" --state open --search "in:title \"$APP $VERSION: patch\"" --json number --jq '.[0].number' 2>/dev/null || true)
           if [ -n "$NUM" ]; then
-            gh issue comment "$NUM" --repo "$REPO" --body "Still failing as of $RUN_URL"
+            gh issue comment "$NUM" --repo "$PATCHES_REPO" --body "Still failing as of $RUN_URL"
           else
-            gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY" --label "patch-failure" 2>/dev/null \
-              || gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY"
+            gh issue create --repo "$PATCHES_REPO" --title "$TITLE" --body "$BODY" --label "patch-failure" 2>/dev/null \
+              || gh issue create --repo "$PATCHES_REPO" --title "$TITLE" --body "$BODY"
           fi
 
   promote:
@@ -246,6 +250,8 @@ jobs:
           private-key: ${{ secrets.PROMOTION_APP_PRIVATE_KEY }}
           owner: xob0t
           repositories: morphe-patches
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Open target-promotion pull requests
         if: steps.discover.outputs.found == 'true'
