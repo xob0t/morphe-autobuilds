@@ -206,12 +206,14 @@ if [ "${#ALL_PATCHES[@]}" -eq 0 ]; then
   echo "::error::No patches found compatible with $PACKAGE in the bundle." >&2; exit 1
 fi
 ENABLE_ARGS=()
+SELECTED_PATCHES=()
 ENABLED_PATCH_COUNT=0
 for p in "${ALL_PATCHES[@]}"; do
   skip=false
   for d in "${DISABLE[@]}"; do [ "$p" = "$d" ] && skip=true && break; done
   $skip && { echo "config-disabled: $p"; continue; }
   ENABLE_ARGS+=(--enable="$p")
+  SELECTED_PATCHES+=("$p")
   ENABLED_PATCH_COUNT=$((ENABLED_PATCH_COUNT + 1))
 done
 echo "Enabling $ENABLED_PATCH_COUNT of ${#ALL_PATCHES[@]} compatible patches."
@@ -240,6 +242,34 @@ if [ $RC -ne 0 ]; then
   echo "::error::$NAME $VNAME failed to patch (rc=$RC). Failed patch(es): ${FAILED:-unknown}." >&2
   out built false; out failed true; out version "$VNAME"; out failed_patches "${FAILED:-unknown}"; exit $RC
 fi
+
+# morphe-cli treats version-incompatible explicitly enabled patches as warnings:
+# it skips them, patches with the remaining selection, and exits zero. The result
+# report is therefore the authoritative postcondition for CI. Refuse to publish
+# unless every patch selected above is present in appliedPatches.
+if ! jq -e '.success == true and (.appliedPatches | type == "array")' "$WORK/result.json" >/dev/null 2>&1; then
+  echo "::error::$NAME $VNAME produced an unsuccessful or invalid patch result report." >&2
+  out built false; out failed true; out version "$VNAME"; out failed_patches "invalid-result-report"; exit 1
+fi
+
+mapfile -t APPLIED_PATCHES < <(jq -r '.appliedPatches[]?.name // empty' "$WORK/result.json")
+MISSING_PATCHES=()
+for selected in "${SELECTED_PATCHES[@]}"; do
+  found=false
+  for applied in "${APPLIED_PATCHES[@]}"; do
+    if [ "$selected" = "$applied" ]; then found=true; break; fi
+  done
+  if [ "$found" != "true" ]; then MISSING_PATCHES+=("$selected"); fi
+done
+
+if [ "${#MISSING_PATCHES[@]}" -ne 0 ]; then
+  MISSING=$(printf '%s\n' "${MISSING_PATCHES[@]}" | paste -sd, -)
+  echo "::error::$NAME $VNAME skipped selected patch(es): $MISSING." >&2
+  out built false; out failed true; out version "$VNAME"; out failed_patches "$MISSING"; exit 1
+fi
+
+APPLIED_PATCH_COUNT=${#APPLIED_PATCHES[@]}
+echo "Applied all $APPLIED_PATCH_COUNT selected patches."
 ls -lh "$OUT"
 
 # ---- 6. publish APK + record per-app state -----------------------------------
@@ -253,7 +283,7 @@ jq -n \
   --arg vn "$VNAME" --argjson vc "${VCODE:-0}" \
   --arg etag "$ETAG" --arg lm "$LASTMOD" --arg clen "$CLEN" \
   --arg src "$RESOLVED_TYPE" \
-  --arg pv "$MPP_VER" --argjson pe "$ENABLED_PATCH_COUNT" \
+  --arg pv "$MPP_VER" --argjson pe "$APPLIED_PATCH_COUNT" \
   --arg asset "$(basename "$OUT")" --arg built "$BUILT_AT" \
   '{app:$app, name:$name, package:$pkg, version_name:$vn, version_code:$vc,
     etag:$etag, last_modified:$lm, content_length:$clen, source:$src,
@@ -275,6 +305,6 @@ done
 gh release upload "$RELEASE_TAG" "$OUT" --clobber
 endg
 
-log "$NAME: published $VNAME ($ENABLED_PATCH_COUNT patches, via $RESOLVED_TYPE) to release '$RELEASE_TAG'."
+log "$NAME: published $VNAME ($APPLIED_PATCH_COUNT patches, via $RESOLVED_TYPE) to release '$RELEASE_TAG'."
 out built true
 out version "$VNAME"

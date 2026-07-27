@@ -13,8 +13,9 @@ Morphe builds without uninstalling.
 > The patch step is the validation gate. Each app-specific patch supports one
 > explicit, known-good app version and requires every advertised hook or surface to
 > be present. If a new app version appears or a required target moves,
-> `morphe-cli` exits non-zero, the build fails, and an issue is opened instead of
-> quietly shipping a half-patched APK.
+> the build fails and an issue is opened instead of quietly shipping a
+> half-patched APK. The autobuilder verifies `morphe-cli`'s result report because
+> the CLI can exit zero after skipping a selected version-incompatible patch.
 
 ## Apps
 
@@ -53,7 +54,8 @@ the upstream app version **or** the Morphe patches bundle changed since its last
    `versionCode`/`versionName` with the runner's `aapt2`. Skip if not newer.
 3. **Patch** — download the latest `morphe-cli` and the latest stable
    `patches-*.mpp`, then `morphe-cli patch …` without bypassing compatibility.
-   Failure here fails the job and opens a
+   The result report must show that every selected patch was actually applied;
+   a failed or skipped patch fails the job and opens a
    `<App> <version>: patch "<name>" failed` issue (see [failure reporting](#optional-file-failures-on-the-patches-repo)).
 4. **Sign** — signed by `morphe-cli` with the app's stable keystore.
 5. **Publish** — upload the APK to the shared `latest` release (replacing the app's
