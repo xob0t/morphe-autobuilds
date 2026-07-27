@@ -10,12 +10,12 @@ enables **all** compatible patches — app-specific **and** universal. The patch
 APKs are re-signed with a stable per-app key, so updates install over previous
 Morphe builds without uninstalling.
 
-> The patch step is the validation gate. Each app-specific patch supports one
-> explicit, known-good app version and requires every advertised hook or surface to
-> be present. If a new app version appears or a required target moves,
-> the build fails and an issue is opened instead of quietly shipping a
-> half-patched APK. The autobuilder verifies `morphe-cli`'s result report because
-> the CLI can exit zero after skipping a selected version-incompatible patch.
+> The patch step is the validation gate. App-specific patches list exact known-good
+> versions and require every advertised hook or surface to be present. An unlisted
+> version is first patched in qualification mode and is never published directly.
+> Success opens an append-only target PR, releases a stable patch bundle, and runs
+> the normal exact-target build again. Failure opens an issue and leaves the
+> published APK unchanged.
 
 ## Apps
 
@@ -26,7 +26,8 @@ Morphe builds without uninstalling.
 | Ozon        | RuStore store API  | — (no official direct URL)            |
 | Wildberries | RuStore store API  | — (no official direct URL)            |
 
-All builds land in the single `latest` release as `<app>-<version>-morphe.apk`.
+All builds land in the single `latest` release under immutable, content-addressed
+names such as `<app>-<version>-morphe-<sha12>.apk`.
 
 **Sources.** Each app has an ordered `sources` list, tried in turn until one resolves
 an APK — so a broken store *or* a broken vendor URL doesn't stop the build. RuStore is
@@ -52,20 +53,22 @@ the upstream app version **or** the Morphe patches bundle changed since its last
    If nothing changed, skip without downloading.
 2. **Download & version** — fetch the APK (browser User-Agent) and read
    `versionCode`/`versionName` with the runner's `aapt2`. Skip if not newer.
-3. **Patch** — download the latest `morphe-cli` and the latest stable
-   `patches-*.mpp`, then `morphe-cli patch …` without bypassing compatibility.
-   The result report must show that every selected patch was actually applied;
-   a failed or skipped patch fails the job and opens a
-   `<App> <version>: patch "<name>" failed` issue (see [failure reporting](#optional-file-failures-on-the-patches-repo)).
-4. **Sign** — signed by `morphe-cli` with the app's stable keystore.
-5. **Publish** — upload the APK to the shared `latest` release (replacing the app's
-   previous APK). Each app's build state is passed as a workflow artifact to a final
-   job that merges them into a single **`manifest.json`** on the release and refreshes
-   the notes. So the release holds only the APKs + one `manifest.json` (per-app
-   version, versionCode, source, patch count, build time). When at least one app
-   actually built, the release is re-published (draft off→on) so its date reflects the
-   update — GitHub otherwise freezes a release's date at first publish. No-op runs
-   leave the date untouched.
+3. **Patch or qualify** — exact listed targets run normally. An unlisted
+   `versionName` + `versionCode` runs once with `--force`, but publication is disabled.
+   In both paths, the result report must contain exactly the selected patch multiset;
+   a failed, missing, or unexpected patch fails the job.
+4. **Promote** — successful qualification is attested, then a narrowly scoped GitHub
+   App opens one append-only target PR directly against `morphe-patches/main`. Required
+   checks verify the attestation, author, changed file, and target list before
+   auto-squash-merge.
+5. **Release and rebuild** — the merged target produces a stable patch release and
+   dispatches this workflow. The ordinary, non-forced exact-target build is the final
+   authoritative check; source drift since qualification is rechecked here.
+6. **Publish transactionally** — sign with the app's stable keystore, upload an
+   immutable APK, download it again to verify its digest, and only then update
+   **`manifest.json`**, which is the active publication pointer. If any step fails,
+   the previous manifest entry and APK remain available. Unreferenced APKs are
+   removed only on later runs after `asset_retention_days` (seven days by default).
 
 **Patch selection: everything.** Each build runs `list-patches -f <package>` to get
 every compatible patch (app-specific + universal) and enables them all with
@@ -95,6 +98,27 @@ base64 -w0 tbank-morphe.keystore | gh secret set TBANK_KEYSTORE_B64
 The keystore is morphe-cli's own format; no password is needed (morphe-cli signs
 with `--keystore` alone). Keep these keys stable so update installs don't break.
 
+### Target-promotion GitHub App
+
+Install one GitHub App on both `xob0t/morphe-autobuilds` and
+`xob0t/morphe-patches`, with repository **Contents: read/write** and **Pull
+requests: read/write**. Add its App ID and private key to both repositories as
+`PROMOTION_APP_ID` and `PROMOTION_APP_PRIVATE_KEY`.
+
+On `morphe-patches`:
+
+- set the repository variable `PROMOTION_BOT_LOGIN` to the App's exact bot login
+  (for example, `my-app[bot]`);
+- enable squash merging and auto-merge;
+- protect `main` and require the `Build` pull-request check before merging;
+- add this App to the `main` ruleset bypass list with **Always allow**.
+  Semantic-release authenticates as the App for its generated release commit; target
+  promotion still uses ordinary `--auto` merging and therefore waits for `Build`.
+
+The App token exists only in dedicated promotion and release/dispatch steps. The
+repository-owned target editing script runs with that token removed from its
+environment.
+
 ### Optional: file failures on the patches repo
 
 When a build fails because a patch went stale against a new app version, an issue is
@@ -110,16 +134,11 @@ Actions → **Auto-build patched APKs** → *Run workflow*:
 - `app` — an id from `config/apps.json`, or `all` (default).
 - `force` — build even if the upstream version is unchanged.
 
-## Build on a new patches release (optional, immediate)
+## Build on a new patches release
 
-The daily cron already picks up a new patches bundle within 24h. To rebuild the
-moment a patches release ships, have the patches repo dispatch this workflow — add a
-step to its release workflow (needs a PAT with `actions:write`/`contents:write` here):
-
-```bash
-gh api repos/<owner>/morphe-autobuilds/dispatches \
-  -f event_type=patches-released
-```
+The patches release workflow dispatches this workflow immediately after every stable
+release. The daily cron remains a reconciliation fallback if dispatch or promotion
+fails.
 
 ## Adding an app
 

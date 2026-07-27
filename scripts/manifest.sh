@@ -15,6 +15,11 @@ if [ -z "$RELEASE_TAG" ]; then
 fi
 STATES_DIR="${STATES_DIR:-states}"
 TITLE=$(jq -r '.release_title // "Morphe patched APKs"' "$CONFIG")
+RETENTION_DAYS=$(jq -r '.asset_retention_days // 7' "$CONFIG")
+if ! [[ "$RETENTION_DAYS" =~ ^[0-9]+$ ]]; then
+  echo "manifest: asset_retention_days must be a non-negative integer" >&2
+  exit 1
+fi
 WORK="${RUNNER_TEMP:-/tmp}/manifest"; mkdir -p "$WORK"
 
 # Start from the existing manifest's apps (so apps skipped this run are preserved).
@@ -23,6 +28,33 @@ APPS='{}'
 if [ -f "$WORK/manifest.json" ] && jq -e '.apps' "$WORK/manifest.json" >/dev/null 2>&1; then
   APPS=$(jq -c '.apps' "$WORK/manifest.json")
 fi
+
+# Garbage-collect only old APKs that are not referenced by the currently published
+# manifest. A newly uploaded replacement is intentionally too young to be removed;
+# the old manifest asset remains referenced until the new manifest is uploaded below.
+REFERENCED_ASSETS=$(
+  {
+    jq -r '.[]?.asset // empty' <<<"$APPS"
+    for state in "$STATES_DIR"/state-*.json; do
+      [ -f "$state" ] || continue
+      jq -r '.asset // empty' "$state" 2>/dev/null || true
+    done
+  } | sed '/^$/d' | sort -u
+)
+CUTOFF_EPOCH=$(( $(date -u +%s) - RETENTION_DAYS * 86400 ))
+while IFS=$'\t' read -r asset created_at; do
+  [[ "$asset" == *.apk ]] || continue
+  grep -Fxq "$asset" <<<"$REFERENCED_ASSETS" && continue
+  created_epoch=$(date -u -d "$created_at" +%s 2>/dev/null || echo 0)
+  if [ "$created_epoch" -gt 0 ] && [ "$created_epoch" -le "$CUTOFF_EPOCH" ]; then
+    echo "Deleting unreferenced APK asset older than ${RETENTION_DAYS}d: $asset"
+    gh release delete-asset "$RELEASE_TAG" "$asset" --yes \
+      || echo "::warning::Could not delete old unreferenced asset $asset"
+  fi
+done < <(
+  gh release view "$RELEASE_TAG" --json assets \
+    --jq '.assets[] | [.name, .createdAt] | @tsv' 2>/dev/null || true
+)
 
 # Overlay each freshly-built app's state, keyed by its id.
 UPDATED=0
@@ -37,8 +69,9 @@ done
 shopt -u nullglob
 
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-jq -n --arg now "$NOW" --argjson apps "$APPS" \
-  '{schema: 1, updated_at: $now, apps: $apps}' >"$WORK/manifest.json"
+jq -n --arg now "$NOW" --argjson retentionDays "$RETENTION_DAYS" --argjson apps "$APPS" \
+  '{schema: 2, updated_at: $now, asset_retention_days: $retentionDays, apps: $apps}' \
+  >"$WORK/manifest.json"
 
 # Notes table, rendered from the manifest (sorted by app name). The version cell
 # links straight to that app's APK asset on this release.
@@ -58,26 +91,14 @@ DL="../../releases/download/$RELEASE_TAG"
   echo "<sub>Updated $NOW.</sub>"
 } >"$N"
 
-gh release edit "$RELEASE_TAG" --title "$TITLE" --notes-file "$N"
+# The manifest is the publication pointer: upload it last among machine-consumed
+# build artifacts, then refresh the human-readable notes from that exact manifest.
 gh release upload "$RELEASE_TAG" "$WORK/manifest.json" --clobber
+gh release edit "$RELEASE_TAG" --title "$TITLE" --notes-file "$N"
 
 # Migration / tidy: drop any legacy per-app state-<id>.json assets from the release.
 LEGACY=$(gh release view "$RELEASE_TAG" --json assets -q '.assets[].name' 2>/dev/null \
   | grep -E '^state-.*\.json$' || true)
 for a in $LEGACY; do echo "Deleting legacy asset $a"; gh release delete-asset "$RELEASE_TAG" "$a" --yes || true; done
 
-# GitHub freezes a release's published_at at first publish — uploading assets or
-# editing notes never moves it, so the release looks stale. When something actually
-# built this run, bump it to "now" by re-publishing (draft off→on), keeping the
-# Latest flag. Skipped on no-op runs so the date reflects real updates only.
-if [ "$UPDATED" -gt 0 ]; then
-  REPO="${GITHUB_REPOSITORY:?}"
-  RID=$(gh api "repos/$REPO/releases/tags/$RELEASE_TAG" --jq '.id')
-  gh api -X PATCH "repos/$REPO/releases/$RID" -F draft=true >/dev/null
-  gh api -X PATCH "repos/$REPO/releases/$RID" -F draft=false -f make_latest=true >/dev/null
-  echo "Re-published '$RELEASE_TAG' ($UPDATED app(s) updated) — published_at bumped to now."
-else
-  echo "No apps updated this run — leaving release date unchanged."
-fi
-
-echo "manifest.json updated for '$RELEASE_TAG'."
+echo "manifest.json updated for '$RELEASE_TAG' ($UPDATED app(s) updated)."

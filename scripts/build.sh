@@ -12,6 +12,8 @@
 #   CONFIG       path to apps.json
 #   MORPHE_CLI   path to morphe-cli-*-all.jar
 #   MPP          path to patches-*.mpp
+#   PATCHES_METADATA patches-list.json from the same exact patch tag
+#   PATCH_TAG     exact resolved patch tag
 #   KEYSTORE     path to the decoded signing keystore for this app
 #   RELEASE_TAG  the shared rolling release tag (e.g. "latest")
 #   GH_TOKEN     token with contents:write on this repo
@@ -22,7 +24,10 @@ set -euo pipefail
 APP_ID="${APP_ID:?APP_ID required}"
 CONFIG="${CONFIG:?CONFIG required}"
 RELEASE_TAG="${RELEASE_TAG:?RELEASE_TAG required}"
+PATCHES_METADATA="${PATCHES_METADATA:?PATCHES_METADATA required}"
+PATCH_TAG="${PATCH_TAG:?PATCH_TAG required}"
 FORCE="${FORCE:-false}"
+PROMOTION_QUALIFICATION="${PROMOTION_QUALIFICATION:-null}"
 
 log()  { printf '::notice::%s\n' "$*"; }
 group(){ printf '::group::%s\n' "$*"; }
@@ -43,8 +48,14 @@ mapfile -t DISABLE < <(jq -r --arg id "$APP_ID" '.apps[] | select(.id==$id) | .d
 # the API before any download, so unchanged apps can be skipped without fetching).
 #   direct  — sources[i].url is the APK; validated with a HEAD before committing.
 #   rustore — RuStore store API: overallInfo→appId, download-link→single non-split URL.
-RS_VCODE=""; RESOLVED_TYPE=""
+RS_VCODE=""; RESOLVED_TYPE=""; RESOLVED_INDEX=""; RESOLVED_SOURCE_FINGERPRINT=""
 src() { jq -r --arg id "$APP_ID" --argjson i "$1" '.apps[]|select(.id==$id).sources['"$1"']'"$2" "$CONFIG"; }
+mark_source() {
+  RESOLVED_INDEX="$1"
+  RESOLVED_SOURCE_FINGERPRINT=$(
+    src "$1" '.' | jq -cS . | sha256sum | cut -d' ' -f1
+  )
+}
 resolve_source() {
   local n i type url ua appid resp rs_device_id rs_ver
   n=$(jq -r --arg id "$APP_ID" '.apps[]|select(.id==$id).sources|length' "$CONFIG")
@@ -57,6 +68,7 @@ resolve_source() {
         ua=$(src "$i" '.user_agent // "Mozilla/5.0 (Linux; Android 13)"')
         if curl -fsSIL -A "$ua" --max-time 30 "$url" >/dev/null 2>&1; then
           RESOLVED_TYPE=direct; SRC_URL=$url; UA=$ua
+          mark_source "$i"
           echo "  using direct: $url"; return 0
         fi
         echo "  direct source unreachable" ;;
@@ -81,6 +93,7 @@ resolve_source() {
            && url=$(printf '%s' "$resp" | jq -er '.body.downloadUrls[0].url' 2>/dev/null); then
           RESOLVED_TYPE=rustore; SRC_URL=$url
           RS_VCODE=$(printf '%s' "$resp" | jq -er '.body.versionCode')
+          mark_source "$i"
           echo "  using RuStore: appId=$appid versionCode=$RS_VCODE"; return 0
         fi
         echo "  RuStore resolve failed" ;;
@@ -199,6 +212,63 @@ if [ "$REBUILD" != "true" ] && [ "${VCODE:-0}" -le "$PREV_CODE" ]; then
   log "$NAME: versionCode $VCODE not newer than $PREV_CODE, patches unchanged — skipping."; out built false; exit 0
 fi
 
+APK_SHA256=$(sha256sum "$APK" | cut -d' ' -f1)
+MPP_SHA256=$(sha256sum "$MPP" | cut -d' ' -f1)
+
+# patches-list.json comes from the same immutable tag as the MPP. Exact
+# non-experimental version/versionCode pairs are authoritative for this package.
+PACKAGE_TARGETS=$(jq -c --arg pkg "$PACKAGE" '
+  [
+    .patches[].compatiblePackages[]?
+    | select(.packageName == $pkg)
+    | .targets[]?
+    | select(
+        .version != null
+        and .versionCode != null
+        and .isExperimental == false
+      )
+    | {version, versionCode}
+  ]
+  | unique_by([.version, .versionCode])
+' "$PATCHES_METADATA")
+if [ "$(jq 'length' <<<"$PACKAGE_TARGETS")" -eq 0 ]; then
+  echo "::error::No exact targets with versionCode found for $PACKAGE in $PATCH_TAG." >&2
+  out built false; out failed true; out version "$VNAME"; out failed_patches "missing-target-metadata"; exit 1
+fi
+
+QUALIFICATION=false
+if ! jq -e --arg version "$VNAME" --argjson code "$VCODE" \
+  'any(.[]; .version == $version and .versionCode == $code)' \
+  <<<"$PACKAGE_TARGETS" >/dev/null; then
+  QUALIFICATION=true
+  log "$NAME $VNAME ($VCODE) is unlisted in $PATCH_TAG; entering target qualification."
+fi
+
+# A stable-release dispatch may carry the evidence that caused this target to be
+# appended. Matching input provenance is useful confirmation; any drift is safe
+# because this exact-target, non-forced build is itself the authoritative recheck.
+if jq -e --arg app "$APP_ID" --arg version "$VNAME" --argjson code "$VCODE" '
+    type == "object"
+    and .app == $app
+    and .version_name == $version
+    and .version_code == $code
+  ' <<<"$PROMOTION_QUALIFICATION" >/dev/null 2>&1; then
+  if jq -e \
+      --arg source "$RESOLVED_TYPE" \
+      --argjson sourceIndex "$RESOLVED_INDEX" \
+      --arg sourceFingerprint "$RESOLVED_SOURCE_FINGERPRINT" \
+      --arg apkSha256 "$APK_SHA256" '
+        .source == $source
+        and .source_index == $sourceIndex
+        and .source_fingerprint == $sourceFingerprint
+        and .apk_sha256 == $apkSha256
+      ' <<<"$PROMOTION_QUALIFICATION" >/dev/null; then
+    log "$NAME: stable rebuild input matches the promotion qualification."
+  else
+    log "$NAME: stable rebuild input changed since qualification; this strict build will requalify it."
+  fi
+fi
+
 # ---- 4. enable EVERY compatible patch (app-specific + universal) -------------
 group "Resolve patch list"
 mapfile -t ALL_PATCHES < <(java -jar "$MORPHE_CLI" list-patches --patches="$MPP" -f "$PACKAGE" 2>/dev/null | strip | sed -n 's/^Name: //p')
@@ -222,8 +292,13 @@ endg
 # ---- 5. patch (this is the test) ---------------------------------------------
 OUT="$WORK/${APP_ID}-${VNAME}-morphe.apk"
 group "Patch $NAME $VNAME"
+COMPATIBILITY_ARGS=()
+if [ "$QUALIFICATION" = "true" ]; then
+  COMPATIBILITY_ARGS+=(--force)
+fi
 set +e
 java -jar "$MORPHE_CLI" patch \
+  "${COMPATIBILITY_ARGS[@]}" \
   --bytecode-mode FULL \
   --exclusive \
   "${ENABLE_ARGS[@]}" \
@@ -255,58 +330,112 @@ if ! jq -e '(.success // true) == true and (.appliedPatches | type == "array")' 
 fi
 
 mapfile -t APPLIED_PATCHES < <(jq -r '.appliedPatches[]?.name // empty' "$WORK/result.json")
-MISSING_PATCHES=()
-for selected in "${SELECTED_PATCHES[@]}"; do
-  found=false
-  for applied in "${APPLIED_PATCHES[@]}"; do
-    if [ "$selected" = "$applied" ]; then found=true; break; fi
-  done
-  if [ "$found" != "true" ]; then MISSING_PATCHES+=("$selected"); fi
-done
-
-if [ "${#MISSING_PATCHES[@]}" -ne 0 ]; then
-  MISSING=$(printf '%s\n' "${MISSING_PATCHES[@]}" | paste -sd, -)
-  echo "::error::$NAME $VNAME skipped selected patch(es): $MISSING." >&2
-  out built false; out failed true; out version "$VNAME"; out failed_patches "$MISSING"; exit 1
+SELECTED_FILE="$WORK/selected-patches.txt"
+APPLIED_FILE="$WORK/applied-patches.txt"
+printf '%s\n' "${SELECTED_PATCHES[@]}" | sort >"$SELECTED_FILE"
+printf '%s\n' "${APPLIED_PATCHES[@]}" | sort >"$APPLIED_FILE"
+if ! cmp -s "$SELECTED_FILE" "$APPLIED_FILE"; then
+  MISSING=$(comm -23 "$SELECTED_FILE" "$APPLIED_FILE" | paste -sd, - || true)
+  UNEXPECTED=$(comm -13 "$SELECTED_FILE" "$APPLIED_FILE" | paste -sd, - || true)
+  DETAILS="missing=${MISSING:-none};unexpected=${UNEXPECTED:-none}"
+  echo "::error::$NAME $VNAME selected/applied patch multisets differ ($DETAILS)." >&2
+  out built false; out failed true; out version "$VNAME"; out failed_patches "$DETAILS"; exit 1
 fi
 
 APPLIED_PATCH_COUNT=${#APPLIED_PATCHES[@]}
 echo "Applied all $APPLIED_PATCH_COUNT selected patches."
 ls -lh "$OUT"
 
-# ---- 6. publish APK + record per-app state -----------------------------------
-# The APK goes to the shared release now; the per-app state is written to STATE_FILE
-# and handed to the manifest job as a workflow artifact, which merges every app into
-# one manifest.json — so the release holds only the APKs + manifest.json.
+# ---- 6. qualify or stage an immutable APK ------------------------------------
 MPP_VER=$(basename "$MPP" | sed -E 's/^patches-(.*)\.mpp$/\1/')
 BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+if [ "$QUALIFICATION" = "true" ]; then
+  QUALIFICATION_FILE="${QUALIFICATION_OUT:-$WORK/qualification-$APP_ID.json}"
+  SELECTED_JSON=$(jq -Rn '[inputs]' <"$SELECTED_FILE")
+  APPLIED_JSON=$(jq -Rn '[inputs]' <"$APPLIED_FILE")
+  RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-unknown}/actions/runs/${GITHUB_RUN_ID:-unknown}"
+  jq -n \
+    --arg app "$APP_ID" --arg name "$NAME" --arg pkg "$PACKAGE" \
+    --arg version "$VNAME" --argjson versionCode "$VCODE" \
+    --arg source "$RESOLVED_TYPE" --argjson sourceIndex "$RESOLVED_INDEX" \
+    --arg sourceFingerprint "$RESOLVED_SOURCE_FINGERPRINT" \
+    --arg apkSha256 "$APK_SHA256" --arg patchTag "$PATCH_TAG" \
+    --arg patchBundleSha256 "$MPP_SHA256" --arg patchesVersion "$MPP_VER" \
+    --arg runUrl "$RUN_URL" \
+    --arg autobuildRepository "${GITHUB_REPOSITORY:-unknown}" \
+    --arg qualifiedAt "$BUILT_AT" \
+    --argjson selected "$SELECTED_JSON" --argjson applied "$APPLIED_JSON" \
+    '{
+      schema: 1,
+      qualification: true,
+      app: $app,
+      name: $name,
+      package: $pkg,
+      version_name: $version,
+      version_code: $versionCode,
+      source: $source,
+      source_index: $sourceIndex,
+      source_fingerprint: $sourceFingerprint,
+      apk_sha256: $apkSha256,
+      patch_tag: $patchTag,
+      patch_bundle_sha256: $patchBundleSha256,
+      patches_version: $patchesVersion,
+      selected_patches: $selected,
+      applied_patches: $applied,
+      run_url: $runUrl,
+      autobuild_repository: $autobuildRepository,
+      qualified_at: $qualifiedAt
+    }' >"$QUALIFICATION_FILE"
+  log "$NAME $VNAME qualified successfully; publication waits for target promotion."
+  out built false
+  out qualified true
+  out version "$VNAME"
+  out version_code "$VCODE"
+  exit 0
+fi
+
+OUT_SHA256=$(sha256sum "$OUT" | cut -d' ' -f1)
+ASSET="${APP_ID}-${VNAME}-morphe-${OUT_SHA256:0:12}.apk"
+IMMUTABLE_OUT="$WORK/$ASSET"
+mv "$OUT" "$IMMUTABLE_OUT"
+
+# Upload under a content-addressed immutable name. The currently referenced APK
+# remains untouched; the serialized manifest job activates this asset later.
+group "Upload immutable APK"
+if gh release view "$RELEASE_TAG" --json assets -q '.assets[].name' 2>/dev/null \
+  | grep -Fxq "$ASSET"; then
+  echo "Asset $ASSET already exists; verifying it."
+else
+  gh release upload "$RELEASE_TAG" "$IMMUTABLE_OUT"
+fi
+VERIFY_DIR="$WORK/verify-upload"
+mkdir -p "$VERIFY_DIR"
+gh release download "$RELEASE_TAG" -p "$ASSET" -D "$VERIFY_DIR" --clobber
+UPLOADED_SHA256=$(sha256sum "$VERIFY_DIR/$ASSET" | cut -d' ' -f1)
+if [ "$UPLOADED_SHA256" != "$OUT_SHA256" ]; then
+  echo "::error::Uploaded asset digest mismatch for $ASSET." >&2
+  out built false; out failed true; out version "$VNAME"; out failed_patches "upload-digest-mismatch"; exit 1
+fi
+endg
+
 jq -n \
   --arg app "$APP_ID" --arg name "$NAME" --arg pkg "$PACKAGE" \
   --arg vn "$VNAME" --argjson vc "${VCODE:-0}" \
   --arg etag "$ETAG" --arg lm "$LASTMOD" --arg clen "$CLEN" \
-  --arg src "$RESOLVED_TYPE" \
+  --arg src "$RESOLVED_TYPE" --argjson srcIndex "$RESOLVED_INDEX" \
+  --arg srcFingerprint "$RESOLVED_SOURCE_FINGERPRINT" \
+  --arg apkSha256 "$APK_SHA256" --arg outputSha256 "$OUT_SHA256" \
   --arg pv "$MPP_VER" --argjson pe "$APPLIED_PATCH_COUNT" \
-  --arg asset "$(basename "$OUT")" --arg built "$BUILT_AT" \
+  --arg asset "$ASSET" --arg built "$BUILT_AT" \
   '{app:$app, name:$name, package:$pkg, version_name:$vn, version_code:$vc,
     etag:$etag, last_modified:$lm, content_length:$clen, source:$src,
+    source_index:$srcIndex, source_fingerprint:$srcFingerprint,
+    apk_sha256:$apkSha256, output_sha256:$outputSha256,
     patches_version:$pv, patches_enabled:$pe, asset:$asset, built_at:$built}' \
   >"$STATE_FILE"
 
-# Drop any previous APK for THIS app (different version name) so only the current
-# build per app remains in the shared release. `|| true` so "no matches" (fresh
-# release) doesn't trip `set -e`/pipefail.
-group "Publish"
-OLD_ASSETS=$(gh release view "$RELEASE_TAG" --json assets -q '.assets[].name' 2>/dev/null \
-  | grep -E "^${APP_ID}-.*-morphe\.apk$" || true)
-for old in $OLD_ASSETS; do
-  if [ "$old" != "$(basename "$OUT")" ]; then
-    echo "Deleting old asset $old"
-    gh release delete-asset "$RELEASE_TAG" "$old" --yes || true
-  fi
-done
-gh release upload "$RELEASE_TAG" "$OUT" --clobber
-endg
-
-log "$NAME: published $VNAME ($APPLIED_PATCH_COUNT patches, via $RESOLVED_TYPE) to release '$RELEASE_TAG'."
+log "$NAME: staged $VNAME ($APPLIED_PATCH_COUNT patches, via $RESOLVED_TYPE) as '$ASSET'."
 out built true
+out qualified false
 out version "$VNAME"
