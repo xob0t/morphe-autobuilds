@@ -10,12 +10,11 @@ enables **all** compatible patches — app-specific **and** universal. The patch
 APKs are re-signed with a stable per-app key, so updates install over previous
 Morphe builds without uninstalling.
 
-> The patch step **is** the regression test: the app-specific patches require their
-> ad surfaces to be present (no silent skips), so if an app update moves a surface or
-> breaks a fingerprint, `morphe-cli` exits non-zero, the build fails, and an issue is
-> opened instead of quietly shipping a half-patched APK.
-> Avito's UI, settings, and telemetry hooks remain best-effort for normal users; this
-> pipeline opts into their built-in strict options so a moved required hook is fatal here.
+> The patch step is the validation gate. Each app-specific patch supports one
+> explicit, known-good app version and requires every advertised hook or surface to
+> be present. If a new app version appears or a required target moves,
+> `morphe-cli` exits non-zero, the build fails, and an issue is opened instead of
+> quietly shipping a half-patched APK.
 
 ## Apps
 
@@ -53,7 +52,8 @@ the upstream app version **or** the Morphe patches bundle changed since its last
 2. **Download & version** — fetch the APK (browser User-Agent) and read
    `versionCode`/`versionName` with the runner's `aapt2`. Skip if not newer.
 3. **Patch** — download the latest `morphe-cli` and the latest stable
-   `patches-*.mpp`, then `morphe-cli patch …`. Failure here fails the job and opens a
+   `patches-*.mpp`, then `morphe-cli patch …` without bypassing compatibility.
+   Failure here fails the job and opens a
    `<App> <version>: patch "<name>" failed` issue (see [failure reporting](#optional-file-failures-on-the-patches-repo)).
 4. **Sign** — signed by `morphe-cli` with the app's stable keystore.
 5. **Publish** — upload the APK to the shared `latest` release (replacing the app's

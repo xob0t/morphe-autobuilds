@@ -4,8 +4,8 @@
 # (app-specific + universal), and publish the APK to the single rolling release.
 # Designed to run on a GitHub-hosted ubuntu runner.
 #
-# The patch step IS the regression test: if a fingerprint no longer resolves on a
-# new app version, morphe-cli exits non-zero and this script fails the job.
+# The patch step is the validation gate: app patches support one explicit version,
+# and every required hook must resolve. Any drift makes morphe-cli exit non-zero.
 #
 # Required env:
 #   APP_ID       app id from config/apps.json (e.g. "avito")
@@ -213,28 +213,6 @@ for p in "${ALL_PATCHES[@]}"; do
   $skip && { echo "config-disabled: $p"; continue; }
   ENABLE_ARGS+=(--enable="$p")
   ENABLED_PATCH_COUNT=$((ENABLED_PATCH_COUNT + 1))
-  # Normal users keep best-effort hooks. CI opts into the patches' built-in strict
-  # modes so required app hook drift aborts instead of shipping silently. Morphe
-  # CLI groups option arguments with the preceding --enable argument.
-  if [ "$PACKAGE" = "com.avito.android" ] && [ "$p" = "UI tweaks" ]; then
-    ENABLE_ARGS+=(-OstrictFavoritesTabs=true)
-  fi
-  if [ "$PACKAGE" = "com.avito.android" ] && [ "$p" = "Morphe settings" ]; then
-    ENABLE_ARGS+=(-OstrictHooks=true)
-  fi
-  if [ "$PACKAGE" = "com.avito.android" ] && [ "$p" = "Disable telemetry" ]; then
-    ENABLE_ARGS+=(-OstrictTargets=true)
-  fi
-  if [ "$PACKAGE" = "ru.ozon.app.android" ] && [ "$p" = "Remove Ozon ads" ]; then
-    ENABLE_ARGS+=(-OstrictTargets=true)
-  fi
-  if [ "$PACKAGE" = "com.wildberries.ru" ] && [ "$p" = "Remove Wildberries ads" ]; then
-    ENABLE_ARGS+=(-OstrictTargets=true)
-  fi
-  if [ "$PACKAGE" = "com.idamob.tinkoff.android" ] && \
-     { [ "$p" = "Remove TBank ads" ] || [ "$p" = "Bypass anti-tamper" ]; }; then
-    ENABLE_ARGS+=(-OstrictTargets=true)
-  fi
 done
 echo "Enabling $ENABLED_PATCH_COUNT of ${#ALL_PATCHES[@]} compatible patches."
 endg
@@ -244,7 +222,6 @@ OUT="$WORK/${APP_ID}-${VNAME}-morphe.apk"
 group "Patch $NAME $VNAME"
 set +e
 java -jar "$MORPHE_CLI" patch \
-  --force \
   --bytecode-mode FULL \
   --exclusive \
   "${ENABLE_ARGS[@]}" \
@@ -258,7 +235,7 @@ RC=$?
 set -e
 endg
 if [ $RC -ne 0 ]; then
-  # Name the patch(es) morphe-cli reported as failed (strict mode stops at the first).
+  # Name the patch(es) morphe-cli reported as failed.
   FAILED=$(jq -r '.failedPatches[]? | (.name // .patch.name // .patch // empty) | strings' "$WORK/result.json" 2>/dev/null | paste -sd, - || true)
   echo "::error::$NAME $VNAME failed to patch (rc=$RC). Failed patch(es): ${FAILED:-unknown}." >&2
   out built false; out failed true; out version "$VNAME"; out failed_patches "${FAILED:-unknown}"; exit $RC
