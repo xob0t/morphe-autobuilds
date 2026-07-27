@@ -5,8 +5,8 @@ on:
     # Daily at 06:00 UTC. Each app rebuilds if its upstream version OR the patches
     # bundle changed since its last build.
     - cron: '0 6 * * *'
-  # Lets the patches repo (or anything with a PAT) kick a build the moment a new
-  # patches release ships — see README. Payload is ignored; the per-app checks decide.
+  # The patches release workflow uses the GitHub App to kick a build immediately
+  # after every new stable release. The per-app checks still decide what rebuilds.
   repository_dispatch:
     types: [patches-released]
   workflow_dispatch:
@@ -53,7 +53,7 @@ jobs:
           echo "matrix=$M" >>"$GITHUB_OUTPUT"
           echo "release_tag=$TAG" >>"$GITHUB_OUTPUT"
           echo "$M"
-          # Ensure the single rolling release exists so matrix jobs can upload to it.
+          # Ensure the single rolling release exists for the serialized publisher.
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --title "$TITLE" --notes "Building…"
           fi
@@ -134,7 +134,8 @@ jobs:
           KEYSTORE: ${{ runner.temp }}/${{ matrix.id }}.keystore
           RELEASE_TAG: ${{ needs.setup.outputs.release_tag }}
           FORCE: ${{ github.event.inputs.force || 'false' }}
-          STATE_OUT: ${{ runner.temp }}/state-${{ matrix.id }}.json
+          CANDIDATE_DIR: ${{ runner.temp }}/publication-${{ matrix.id }}/candidate
+          STATE_OUT: ${{ runner.temp }}/publication-${{ matrix.id }}/state-${{ matrix.id }}.json
           QUALIFICATION_OUT: ${{ runner.temp }}/qualification-${{ matrix.id }}.json
           PATCH_TAG: ${{ steps.mpp.outputs.tag }}
           PROMOTION_QUALIFICATION: ${{ toJson(github.event.client_payload.qualification) }}
@@ -144,15 +145,17 @@ jobs:
           export PATCHES_METADATA="${{ github.workspace }}/tools/patches-list.json"
           bash scripts/build.sh
 
-      # Hand this app's state to the manifest job (only if it actually built).
-      - name: Upload state artifact
+      # Keep the candidate off the public release until the serialized publisher
+      # can activate it.
+      - name: Upload publication candidate
         if: steps.build.outputs.built == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: state-${{ matrix.id }}
-          path: ${{ runner.temp }}/state-${{ matrix.id }}.json
-          if-no-files-found: ignore
+          name: publication-${{ matrix.id }}
+          path: ${{ runner.temp }}/publication-${{ matrix.id }}
+          if-no-files-found: error
           retention-days: 2
+          compression-level: 0
 
       - name: Upload qualification evidence
         if: steps.build.outputs.qualified == 'true'
@@ -276,25 +279,25 @@ jobs:
             gh issue create --title "$TITLE" --body "$BODY"
           fi
 
-  manifest:
+  publish:
+    name: Publish verified APKs
     needs: [setup, build]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Download state artifacts
-        # No artifacts on a no-change run — don't fail the job over it; manifest.sh
-        # then just refreshes notes from the existing manifest.
-        continue-on-error: true
+      - name: Download workflow publication candidates
+        # A no-change or all-failed run has no publication artifacts. The publisher
+        # exits without touching the currently released APKs.
         uses: actions/download-artifact@v4
         with:
-          path: states
-          pattern: state-*
+          path: publications
+          pattern: publication-*
           merge-multiple: true
-      - name: Build manifest.json + refresh notes
+      - name: Publish clean APK names and manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONFIG: ${{ github.workspace }}/config/apps.json
           RELEASE_TAG: ${{ needs.setup.outputs.release_tag }}
-          STATES_DIR: ${{ github.workspace }}/states
+          PUBLICATIONS_DIR: ${{ github.workspace }}/publications
         run: bash scripts/manifest.sh
