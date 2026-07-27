@@ -23,6 +23,8 @@ on:
 permissions:
   contents: write
   issues: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: autobuild-${{ github.ref }}
@@ -75,6 +77,7 @@ jobs:
         id: mpp
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISPATCH_PATCH_TAG: ${{ github.event.client_payload.patch_tag || '' }}
         run: |
           REPO=$(jq -r '.patches_repo' config/apps.json)
           PRE=$(jq -r '.patches_use_prerelease' config/apps.json)
@@ -82,6 +85,10 @@ jobs:
             TAG=$(gh release list --repo "$REPO" --limit 1 --json tagName --jq '.[0].tagName')
           else
             TAG=$(gh release list --repo "$REPO" --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName')
+          fi
+          if [ -n "$DISPATCH_PATCH_TAG" ] && [ "$TAG" != "$DISPATCH_PATCH_TAG" ]; then
+            echo "::error::Dispatched patch tag $DISPATCH_PATCH_TAG is not the current stable tag $TAG."
+            exit 1
           fi
           echo "repo=$REPO" >>"$GITHUB_OUTPUT"
           echo "tag=$TAG" >>"$GITHUB_OUTPUT"
@@ -95,6 +102,17 @@ jobs:
           CLI_REPO=$(jq -r '.cli_repo' config/apps.json)
           gh release download --repo "$CLI_REPO" --pattern '*-all.jar' --dir tools --clobber
           gh release download "${{ steps.mpp.outputs.tag }}" --repo "${{ steps.mpp.outputs.repo }}" --pattern 'patches-*.mpp' --dir tools --clobber
+          gh api \
+            "repos/${{ steps.mpp.outputs.repo }}/contents/patches-list.json?ref=${{ steps.mpp.outputs.tag }}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            > tools/patches-list.json
+          EXPECTED_VERSION="${{ steps.mpp.outputs.tag }}"
+          EXPECTED_VERSION="${EXPECTED_VERSION#v}"
+          ACTUAL_VERSION=$(jq -r '.version | ltrimstr("v")' tools/patches-list.json)
+          if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::Patch metadata version $ACTUAL_VERSION does not match tag $EXPECTED_VERSION."
+            exit 1
+          fi
           ls -lh tools
 
       - name: Decode signing keystore
@@ -117,9 +135,13 @@ jobs:
           RELEASE_TAG: ${{ needs.setup.outputs.release_tag }}
           FORCE: ${{ github.event.inputs.force || 'false' }}
           STATE_OUT: ${{ runner.temp }}/state-${{ matrix.id }}.json
+          QUALIFICATION_OUT: ${{ runner.temp }}/qualification-${{ matrix.id }}.json
+          PATCH_TAG: ${{ steps.mpp.outputs.tag }}
+          PROMOTION_QUALIFICATION: ${{ toJson(github.event.client_payload.qualification) }}
         run: |
           export MORPHE_CLI=$(ls "${{ github.workspace }}"/tools/morphe-desktop-*-all.jar | tail -1)
           export MPP=$(ls "${{ github.workspace }}"/tools/patches-*.mpp | tail -1)
+          export PATCHES_METADATA="${{ github.workspace }}/tools/patches-list.json"
           bash scripts/build.sh
 
       # Hand this app's state to the manifest job (only if it actually built).
@@ -131,6 +153,21 @@ jobs:
           path: ${{ runner.temp }}/state-${{ matrix.id }}.json
           if-no-files-found: ignore
           retention-days: 2
+
+      - name: Upload qualification evidence
+        if: steps.build.outputs.qualified == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qualification-${{ matrix.id }}-${{ steps.build.outputs.version_code }}
+          path: ${{ runner.temp }}/qualification-${{ matrix.id }}.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Attest qualification evidence
+        if: steps.build.outputs.qualified == 'true'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ runner.temp }}/qualification-${{ matrix.id }}.json
 
       # A patch failure means a patch went stale against a new app version — so the
       # issue is filed on the PATCHES repo when a PAT with access is provided
@@ -168,6 +205,69 @@ jobs:
           else
             gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY" --label "patch-failure" 2>/dev/null \
               || gh issue create --repo "$REPO" --title "$TITLE" --body "$BODY"
+          fi
+
+  promote:
+    name: Promote qualified targets
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    concurrency:
+      group: target-promotion
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download qualification evidence
+        id: evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          path: qualifications
+          pattern: qualification-*
+          merge-multiple: true
+
+      - name: Discover qualified targets
+        id: discover
+        run: |
+          if find qualifications -maxdepth 1 -name 'qualification-*.json' -print -quit 2>/dev/null | grep -q .; then
+            echo "found=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "found=false" >>"$GITHUB_OUTPUT"
+            echo "No qualified targets in this run."
+          fi
+
+      - name: Create promotion token
+        if: steps.discover.outputs.found == 'true'
+        id: promotion-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.PROMOTION_APP_ID }}
+          private-key: ${{ secrets.PROMOTION_APP_PRIVATE_KEY }}
+          owner: xob0t
+          repositories: morphe-patches
+
+      - name: Open target-promotion pull requests
+        if: steps.discover.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ steps.promotion-token.outputs.token }}
+          EVIDENCE_DIR: ${{ github.workspace }}/qualifications
+          PATCHES_REPO: xob0t/morphe-patches
+        run: bash scripts/promote_target.sh
+
+      - name: Report promotion failure
+        if: failure() && steps.discover.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="Target promotion failed"
+          BODY="Automatic target promotion failed in $RUN_URL. The qualification evidence remains available as a workflow artifact, and the next scheduled run will reconcile it."
+          NUM=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --body "Still failing as of $RUN_URL"
+          else
+            gh issue create --title "$TITLE" --body "$BODY"
           fi
 
   manifest:
