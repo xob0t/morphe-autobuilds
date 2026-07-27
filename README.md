@@ -26,8 +26,9 @@ Morphe builds without uninstalling.
 | Ozon        | RuStore store API  | — (no official direct URL)            |
 | Wildberries | RuStore store API  | — (no official direct URL)            |
 
-All builds land in the single `latest` release under immutable, content-addressed
-names such as `<app>-<version>-morphe-<sha12>.apk`.
+The public `latest` release keeps one clean APK name per app version, such as
+`<app>-<version>-morphe.apk`. Candidates stay off the release as short-lived
+Actions artifacts until the serialized publisher verifies and activates them.
 
 **Sources.** Each app has an ordered `sources` list, tried in turn until one resolves
 an APK — so a broken store *or* a broken vendor URL doesn't stop the build. RuStore is
@@ -64,11 +65,12 @@ the upstream app version **or** the Morphe patches bundle changed since its last
 5. **Release and rebuild** — the merged target produces a stable patch release and
    dispatches this workflow. The ordinary, non-forced exact-target build is the final
    authoritative check; source drift since qualification is rechecked here.
-6. **Publish transactionally** — sign with the app's stable keystore, upload an
-   immutable APK, download it again to verify its digest, and only then update
-   **`manifest.json`**, which is the active publication pointer. If any step fails,
-   the previous manifest entry and APK remain available. Unreferenced APKs are
-   removed only on later runs after `asset_retention_days` (seven days by default).
+6. **Publish transactionally** — sign with the app's stable keystore and keep the
+   candidate off the release as a short-lived Actions artifact. One serialized
+   publisher verifies the digest, swaps the public clean-name APK with rollback
+   protection, and updates **`manifest.json`** last. If any step fails, it restores
+   the previous asset and manifest. Superseded public APKs are removed only after
+   activation.
 
 **Patch selection: everything.** Each build runs `list-patches -f <package>` to get
 every compatible patch (app-specific + universal) and enables them all with

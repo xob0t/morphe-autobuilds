@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build one app: detect a new version, patch it with EVERY compatible Morphe patch
-# (app-specific + universal), and publish the APK to the single rolling release.
+# (app-specific + universal), and stage an unreleased publication candidate.
 # Designed to run on a GitHub-hosted ubuntu runner.
 #
 # The patch step is the validation gate: app patches support one explicit version,
@@ -16,7 +16,8 @@
 #   PATCH_TAG     exact resolved patch tag
 #   KEYSTORE     path to the decoded signing keystore for this app
 #   RELEASE_TAG  the shared rolling release tag (e.g. "latest")
-#   GH_TOKEN     token with contents:write on this repo
+#   GH_TOKEN     token with contents:read on this repo
+#   CANDIDATE_DIR directory for the clean-name APK candidate
 #   FORCE        "true" to build even if the version is unchanged (optional)
 #   GITHUB_OUTPUT  set by Actions; receives built=/version=/failed= (optional)
 set -euo pipefail
@@ -28,6 +29,7 @@ PATCHES_METADATA="${PATCHES_METADATA:?PATCHES_METADATA required}"
 PATCH_TAG="${PATCH_TAG:?PATCH_TAG required}"
 FORCE="${FORCE:-false}"
 PROMOTION_QUALIFICATION="${PROMOTION_QUALIFICATION:-null}"
+CANDIDATE_DIR="${CANDIDATE_DIR:-}"
 
 log()  { printf '::notice::%s\n' "$*"; }
 group(){ printf '::group::%s\n' "$*"; }
@@ -346,7 +348,7 @@ APPLIED_PATCH_COUNT=${#APPLIED_PATCHES[@]}
 echo "Applied all $APPLIED_PATCH_COUNT selected patches."
 ls -lh "$OUT"
 
-# ---- 6. qualify or stage an immutable APK ------------------------------------
+# ---- 6. qualify or stage an unreleased publication candidate ----------------
 MPP_VER=$(basename "$MPP" | sed -E 's/^patches-(.*)\.mpp$/\1/')
 BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -396,28 +398,19 @@ if [ "$QUALIFICATION" = "true" ]; then
 fi
 
 OUT_SHA256=$(sha256sum "$OUT" | cut -d' ' -f1)
-ASSET="${APP_ID}-${VNAME}-morphe-${OUT_SHA256:0:12}.apk"
-IMMUTABLE_OUT="$WORK/$ASSET"
-mv "$OUT" "$IMMUTABLE_OUT"
-
-# Upload under a content-addressed immutable name. The currently referenced APK
-# remains untouched; the serialized manifest job activates this asset later.
-group "Upload immutable APK"
-if gh release view "$RELEASE_TAG" --json assets -q '.assets[].name' 2>/dev/null \
-  | grep -Fxq "$ASSET"; then
-  echo "Asset $ASSET already exists; verifying it."
-else
-  gh release upload "$RELEASE_TAG" "$IMMUTABLE_OUT"
+ASSET="${APP_ID}-${VNAME}-morphe.apk"
+if [ -z "$CANDIDATE_DIR" ]; then
+  echo "::error::CANDIDATE_DIR is required for a publishable build." >&2
+  out built false; exit 1
 fi
-VERIFY_DIR="$WORK/verify-upload"
-mkdir -p "$VERIFY_DIR"
-gh release download "$RELEASE_TAG" -p "$ASSET" -D "$VERIFY_DIR" --clobber
-UPLOADED_SHA256=$(sha256sum "$VERIFY_DIR/$ASSET" | cut -d' ' -f1)
-if [ "$UPLOADED_SHA256" != "$OUT_SHA256" ]; then
-  echo "::error::Uploaded asset digest mismatch for $ASSET." >&2
-  out built false; out failed true; out version "$VNAME"; out failed_patches "upload-digest-mismatch"; exit 1
+mkdir -p "$CANDIDATE_DIR"
+CANDIDATE="$CANDIDATE_DIR/$ASSET"
+mv "$OUT" "$CANDIDATE"
+STAGED_SHA256=$(sha256sum "$CANDIDATE" | cut -d' ' -f1)
+if [ "$STAGED_SHA256" != "$OUT_SHA256" ]; then
+  echo "::error::Staged candidate digest mismatch for $ASSET." >&2
+  out built false; exit 1
 fi
-endg
 
 jq -n \
   --arg app "$APP_ID" --arg name "$NAME" --arg pkg "$PACKAGE" \
@@ -435,7 +428,7 @@ jq -n \
     patches_version:$pv, patches_enabled:$pe, asset:$asset, built_at:$built}' \
   >"$STATE_FILE"
 
-log "$NAME: staged $VNAME ($APPLIED_PATCH_COUNT patches, via $RESOLVED_TYPE) as '$ASSET'."
+log "$NAME: staged unreleased candidate $VNAME ($APPLIED_PATCH_COUNT patches, via $RESOLVED_TYPE) as '$ASSET'."
 out built true
 out qualified false
 out version "$VNAME"
