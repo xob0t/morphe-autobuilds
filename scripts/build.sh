@@ -247,7 +247,9 @@ fi
 # it skips them, patches with the remaining selection, and exits zero. The result
 # report is therefore the authoritative postcondition for CI. Refuse to publish
 # unless every patch selected above is present in appliedPatches.
-if ! jq -e '.success == true and (.appliedPatches | type == "array")' "$WORK/result.json" >/dev/null 2>&1; then
+# kotlinx.serialization omits success when it has its default value (true), but
+# writes false on an unsuccessful run.
+if ! jq -e '(.success // true) == true and (.appliedPatches | type == "array")' "$WORK/result.json" >/dev/null 2>&1; then
   echo "::error::$NAME $VNAME produced an unsuccessful or invalid patch result report." >&2
   out built false; out failed true; out version "$VNAME"; out failed_patches "invalid-result-report"; exit 1
 fi
