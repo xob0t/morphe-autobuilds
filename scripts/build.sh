@@ -53,7 +53,7 @@ src() { jq -r --arg id "$APP_ID" --argjson i "$1" '.apps[]|select(.id==$id).sour
 mark_source() {
   RESOLVED_INDEX="$1"
   RESOLVED_SOURCE_FINGERPRINT=$(
-    src "$1" '.' | jq -cS . | sha256sum | cut -d' ' -f1
+    src "$1" '' | jq -cS . | sha256sum | cut -d' ' -f1
   )
 }
 resolve_source() {
