@@ -27,6 +27,7 @@ if [ -z "$RELEASE_TAG" ]; then
   exit 1
 fi
 
+DL="../../releases/download/$RELEASE_TAG"
 mkdir -p "$WORK" "$VERIFY_DIR"
 
 asset_id() {
@@ -95,6 +96,26 @@ delete_asset() {
   fi
 }
 
+delete_asset_id() {
+  local id=$1
+  if [ -n "$id" ]; then
+    gh api --method DELETE "repos/$REPOSITORY/releases/assets/$id" --silent
+  fi
+}
+
+wait_for_asset_id() {
+  local name=$1 id attempt
+  for ((attempt=0; attempt<5; attempt++)); do
+    id=$(asset_id "$name")
+    if [ -n "$id" ]; then
+      printf '%s\n' "$id"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 download_and_verify() {
   local name=$1 expected=$2 destination=$3 actual
   rm -f "$destination"
@@ -105,6 +126,25 @@ download_and_verify() {
     echo "publisher: digest mismatch for $name (expected $expected, got $actual)" >&2
     return 1
   fi
+}
+
+render_notes() {
+  local manifest=$1 destination=$2 updated
+  updated=$(jq -r '.updated_at // empty' "$manifest")
+  [ -n "$updated" ] || updated=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  {
+    echo "Latest [Morphe](https://morphe.software)-patched APKs, rebuilt automatically whenever an app **or** the patches bundle updates. **Every** compatible patch is enabled (app-specific + universal); APKs are re-signed with a stable per-app key so updates install over previous Morphe builds."
+    echo
+    echo "| App | Version | Download | Patches | Source | Bundle | Built (UTC) |"
+    echo "|-----|---------|:-------:|:------:|:------:|--------|-------------|"
+    jq -r --arg dl "$DL" '.apps | to_entries | sort_by(.value.name)[] | .value
+           | "| \(.name) | `\(.version_name)` | [⬇ APK](\($dl)/\(.asset)) | \(.patches_enabled) | \(.source // "?") | `\(.patches_version)` | \(.built_at) |"' \
+       "$manifest"
+    echo
+    echo "Each APK is the unmodified upstream binary (from RuStore or the vendor's own CDN), patched and re-signed. Machine-readable details: [\`manifest.json\`]($DL/manifest.json). Patches: [xob0t/morphe-patches](https://github.com/xob0t/morphe-patches)."
+    echo
+    echo "<sub>Updated $updated.</sub>"
+  } >"$destination"
 }
 
 # Recover a manifest rename if a runner was terminated in the narrow swap window.
@@ -166,6 +206,10 @@ shopt -s nullglob
 STATE_FILES=("$PUBLICATIONS_DIR"/state-*.json)
 shopt -u nullglob
 if [ "${#STATE_FILES[@]}" -eq 0 ]; then
+  if [ "$HAVE_MANIFEST" = "true" ]; then
+    render_notes "$OLD_MANIFEST" "$NEW_NOTES"
+    gh release edit "$RELEASE_TAG" --title "$TITLE" --notes-file "$NEW_NOTES"
+  fi
   echo "publisher: no workflow candidates; active release verified and unchanged."
   exit 0
 fi
@@ -229,25 +273,14 @@ jq -n --arg now "$NOW" --argjson apps "$APPS" \
   '{schema: 2, updated_at: $now, asset_retention_days: 0, apps: $apps}' \
   >"$NEW_MANIFEST"
 
-DL="../../releases/download/$RELEASE_TAG"
-{
-  echo "Latest [Morphe](https://morphe.software)-patched APKs, rebuilt automatically whenever an app **or** the patches bundle updates. **Every** compatible patch is enabled (app-specific + universal); APKs are re-signed with a stable per-app key so updates install over previous Morphe builds."
-  echo
-  echo "| App | Version | Download | Patches | Source | Bundle | Built (UTC) |"
-  echo "|-----|---------|:-------:|:------:|:------:|--------|-------------|"
-  jq -r --arg dl "$DL" '.apps | to_entries | sort_by(.value.name)[] | .value
-         | "| \(.name) | `\(.version_name)` | [⬇ APK](\($dl)/\(.asset)) | \(.patches_enabled) | \(.source // "?") | `\(.patches_version)` | \(.built_at) |"' \
-     "$NEW_MANIFEST"
-  echo
-  echo "Each APK is the unmodified upstream binary (from RuStore or the vendor's own CDN), patched and re-signed. Machine-readable details: [\`manifest.json\`]($DL/manifest.json). Patches: [xob0t/morphe-patches](https://github.com/xob0t/morphe-patches)."
-  echo
-  echo "<sub>Updated $NOW.</sub>"
-} >"$NEW_NOTES"
+render_notes "$NEW_MANIFEST" "$NEW_NOTES"
 
 declare -a NEW_ASSETS=()
+declare -a NEW_ASSET_IDS=()
 declare -a BACKUP_IDS=()
 declare -a BACKUP_ORIGINALS=()
 MANIFEST_BACKUP_ID=""
+MANIFEST_NEW_ID=""
 MANIFEST_NEW=false
 NOTES_TOUCHED=false
 COMMITTED=false
@@ -258,14 +291,22 @@ rollback() {
   echo "::warning::Publication failed; restoring the previous release."
 
   if [ "$MANIFEST_NEW" = "true" ]; then
-    delete_asset manifest.json
+    if [ -n "$MANIFEST_NEW_ID" ]; then
+      delete_asset_id "$MANIFEST_NEW_ID"
+    else
+      delete_asset manifest.json
+    fi
   fi
   if [ -n "$MANIFEST_BACKUP_ID" ]; then
     rename_asset "$MANIFEST_BACKUP_ID" manifest.json
   fi
 
   for ((i=${#NEW_ASSETS[@]}-1; i>=0; i--)); do
-    delete_asset "${NEW_ASSETS[$i]}"
+    if [ -n "${NEW_ASSET_IDS[$i]}" ]; then
+      delete_asset_id "${NEW_ASSET_IDS[$i]}"
+    else
+      delete_asset "${NEW_ASSETS[$i]}"
+    fi
   done
   for ((i=${#BACKUP_IDS[@]}-1; i>=0; i--)); do
     current_id=$(asset_id "${BACKUP_ORIGINALS[$i]}")
@@ -303,8 +344,14 @@ for state in "${STATE_FILES[@]}"; do
     BACKUP_ORIGINALS+=("$asset")
   fi
 
-  NEW_ASSETS+=("$asset")
   gh release upload "$RELEASE_TAG" "$candidate"
+  NEW_ASSETS+=("$asset")
+  uploaded_id=$(wait_for_asset_id "$asset" || true)
+  NEW_ASSET_IDS+=("$uploaded_id")
+  if [ -z "$uploaded_id" ]; then
+    echo "publisher: uploaded $asset but could not resolve its asset ID" >&2
+    exit 1
+  fi
   download_and_verify "$asset" "$expected" "$VERIFY_DIR/$asset"
   echo "publisher: verified public candidate $asset"
 done
@@ -318,8 +365,13 @@ if [ -n "$existing_manifest_id" ]; then
   MANIFEST_BACKUP_ID="$existing_manifest_id"
 fi
 
-MANIFEST_NEW=true
 gh release upload "$RELEASE_TAG" "$NEW_MANIFEST"
+MANIFEST_NEW=true
+MANIFEST_NEW_ID=$(wait_for_asset_id manifest.json || true)
+if [ -z "$MANIFEST_NEW_ID" ]; then
+  echo "publisher: uploaded manifest.json but could not resolve its asset ID" >&2
+  exit 1
+fi
 NEW_MANIFEST_SHA=$(sha256sum "$NEW_MANIFEST" | cut -d' ' -f1)
 download_and_verify manifest.json "$NEW_MANIFEST_SHA" "$VERIFY_DIR/manifest.json"
 
