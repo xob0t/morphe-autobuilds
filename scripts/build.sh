@@ -171,7 +171,14 @@ endg
 
 # ---- 3. download + read version ----------------------------------------------
 group "Download $NAME"
-curl -fL --retry 3 --retry-delay 5 -A "$UA" -o "$APK" "$SRC_URL"
+DOWNLOAD_TLS_ARGS=()
+if [ "$RESOLVED_TYPE" = "rustore" ]; then
+  # RuStore's APK CDN currently uses a certificate chain that is not trusted by
+  # GitHub-hosted runners. Keep this exception scoped to RuStore downloads; the
+  # metadata API used to resolve the URL still receives normal TLS validation.
+  DOWNLOAD_TLS_ARGS+=(--insecure)
+fi
+curl "${DOWNLOAD_TLS_ARGS[@]}" -fL --retry 3 --retry-delay 5 -A "$UA" -o "$APK" "$SRC_URL"
 ls -lh "$APK"
 
 # RuStore may wrap the installable APK with ART baseline profiles in an outer ZIP.
