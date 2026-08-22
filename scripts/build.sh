@@ -49,7 +49,7 @@ mapfile -t DISABLE < <(jq -r --arg id "$APP_ID" '.apps[] | select(.id==$id) | .d
 # RESOLVED_TYPE, and — for rustore — RS_VCODE (the upstream versionCode, returned by
 # the API before any download, so unchanged apps can be skipped without fetching).
 #   direct  — sources[i].url is the APK; validated with a HEAD before committing.
-#   rustore — RuStore store API: overallInfo→appId, download-link→single non-split URL.
+#   rustore — signed RuStore API: overallInfo→appId, download-link→single non-split URL.
 RS_VCODE=""; RESOLVED_TYPE=""; RESOLVED_INDEX=""; RESOLVED_SOURCE_FINGERPRINT=""
 src() { jq -r --arg id "$APP_ID" --argjson i "$1" '.apps[]|select(.id==$id).sources['"$1"']'"$2" "$CONFIG"; }
 mark_source() {
@@ -58,8 +58,122 @@ mark_source() {
     src "$1" '' | jq -cS . | sha256sum | cut -d' ' -f1
   )
 }
+
+# Since August 2026, RuStore requires a short-lived client signature on showcase
+# and download-link calls. These values reproduce the official client's native
+# signature routine; the nonce remains unique to this resolver invocation.
+RUSTORE_SECURE_KEY_HEX="2be79e8826e75459d9ef528455a974839b221da5fabfa76b87cba978b8043e85"
+RUSTORE_CERT_SHA256_HEX="661f20828ef780de0b79bc59f26a30864316355f30e4f91cfa14a20791839914"
+resolve_rustore() {
+  local source_index="$1"
+  local rs_device_seed rs_device_id rs_version_json rs_ver rs_ver_name rs_ua nonce signature
+  local app_info appid payload resp url
+  local -a rs_headers
+
+  if [ -r /proc/sys/kernel/random/uuid ]; then
+    rs_device_seed=$(tr -d '-' </proc/sys/kernel/random/uuid | cut -c1-16)
+  else
+    rs_device_seed=$(python3 -c 'import secrets; print(secrets.token_hex(8))')
+  fi
+  rs_device_id="$rs_device_seed-$RANDOM$RANDOM"
+  if ! rs_version_json=$(curl -fsS --retry 2 --max-time 30 \
+      -H "deviceId: $rs_device_id" \
+      "https://backapi.rustore.ru/rustore-info/new-version"); then
+    echo "  RuStore version request failed" >&2
+    return 1
+  fi
+  if ! rs_ver=$(printf '%s' "$rs_version_json" | jq -er '.body.latestVersion') \
+      || ! rs_ver_name=$(printf '%s' "$rs_version_json" | jq -er '.body.latestVersionName'); then
+    echo "  RuStore version response was malformed" >&2
+    return 1
+  fi
+
+  rs_ua="RuStore/$rs_ver_name (Android 15; SDK 35; arm64-v8a, armeabi-v7a, armeabi; Google Pixel 8; ru)"
+  rs_headers=(
+    -H "deviceId: $rs_device_id"
+    -H "firmwareVer: 15"
+    -H "androidSdkVer: 35"
+    -H "deviceManufacturerName: Google"
+    -H "deviceModelName: Pixel 8"
+    -H "deviceModel: Google Pixel 8"
+    -H "firmwareLang: ru"
+    -H "ruStoreVerCode: $rs_ver"
+    -H "ruStoreVerName: $rs_ver_name"
+    -H "deviceType: mobile"
+    -H "User-Agent: $rs_ua"
+  )
+
+  if ! nonce=$(curl -fsS --retry 2 --max-time 30 -X POST \
+      "https://api.rustore.ru/v1/secure/nonce" \
+      "${rs_headers[@]}" \
+      -H "Content-Type: application/json" \
+      -d '{}' | jq -er '.nonce'); then
+    echo "  RuStore nonce request failed" >&2
+    return 1
+  fi
+  if ! signature=$(python3 - "$nonce" "$RUSTORE_SECURE_KEY_HEX" "$RUSTORE_CERT_SHA256_HEX" <<'PY'
+import base64
+import hashlib
+import hmac
+import sys
+
+nonce = base64.b64decode(sys.argv[1], validate=True)
+key = bytes.fromhex(sys.argv[2])
+certificate = bytes.fromhex(sys.argv[3])
+print(base64.b64encode(hmac.new(key, nonce + certificate, hashlib.sha256).digest()).decode())
+PY
+  ); then
+    echo "  RuStore client signature generation failed" >&2
+    return 1
+  fi
+
+  if ! app_info=$(curl -fsS --retry 2 --max-time 30 \
+      "${rs_headers[@]}" \
+      -H "X-Client-Signature: $signature" \
+      "https://backapi.rustore.ru/applicationData/overallInfo/$PACKAGE"); then
+    echo "  RuStore app info request failed" >&2
+    return 1
+  fi
+  if ! appid=$(printf '%s' "$app_info" | jq -er '.body.appId'); then
+    echo "  RuStore app info response was malformed" >&2
+    return 1
+  fi
+
+  payload=$(jq -nc --argjson appId "$appid" '{
+    appId: $appId,
+    firstInstall: true,
+    mobileServices: [],
+    supportedAbis: ["arm64-v8a", "armeabi-v7a", "armeabi"],
+    screenDensity: 480,
+    supportedLocales: ["ru", "en"],
+    sdkVersion: 35,
+    withoutSplits: true,
+    signatureFingerprints: null
+  }')
+  if ! resp=$(curl -fsS --retry 2 --max-time 30 -X POST \
+      "https://backapi.rustore.ru/v3/showcase/apps/download-link" \
+      "${rs_headers[@]}" \
+      -H "X-Client-Signature: $signature" \
+      -H "Content-Type: application/json; charset=utf-8" \
+      -d "$payload"); then
+    echo "  RuStore download-link request failed" >&2
+    return 1
+  fi
+  if ! url=$(printf '%s' "$resp" | jq -er '.downloadUrls[0].url') \
+      || ! RS_VCODE=$(printf '%s' "$resp" | jq -er '.versionCode'); then
+    echo "  RuStore download-link response was malformed" >&2
+    return 1
+  fi
+
+  RESOLVED_TYPE=rustore
+  SRC_URL=$url
+  UA=$rs_ua
+  mark_source "$source_index"
+  echo "  using RuStore: appId=$appid versionCode=$RS_VCODE"
+}
+
 resolve_source() {
-  local n i type url ua appid resp rs_device_id rs_ver
+  local n i type url ua
   n=$(jq -r --arg id "$APP_ID" '.apps[]|select(.id==$id).sources|length' "$CONFIG")
   for ((i=0; i<n; i++)); do
     type=$(src "$i" '.type')
@@ -75,28 +189,8 @@ resolve_source() {
         fi
         echo "  direct source unreachable" ;;
       rustore)
-        rs_device_id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null \
-          || printf '%s-%s' "$RANDOM$RANDOM" "$RANDOM$RANDOM")
-        if rs_ver=$(curl -fsS --retry 2 --max-time 30 \
-              -H "deviceId: $rs_device_id" \
-              "https://backapi.rustore.ru/rustore-info/new-version" 2>/dev/null \
-              | jq -er '.body.latestVersion' 2>/dev/null) \
-           && appid=$(curl -fsS --retry 2 --max-time 30 \
-              -H "deviceId: $rs_device_id" \
-              -H "ruStoreVerCode: $rs_ver" \
-              "https://backapi.rustore.ru/applicationData/overallInfo/$PACKAGE" 2>/dev/null \
-              | jq -er '.body.appId' 2>/dev/null) \
-           && resp=$(curl -fsS --retry 2 --max-time 30 -X POST \
-              "https://backapi.rustore.ru/applicationData/v2/download-link" \
-              -H "deviceId: $rs_device_id" \
-              -H "ruStoreVerCode: $rs_ver" \
-              -H "Content-Type: application/json" \
-              -d "{\"appId\":$appid,\"firstInstall\":true,\"withoutSplits\":true}" 2>/dev/null) \
-           && url=$(printf '%s' "$resp" | jq -er '.body.downloadUrls[0].url' 2>/dev/null); then
-          RESOLVED_TYPE=rustore; SRC_URL=$url
-          RS_VCODE=$(printf '%s' "$resp" | jq -er '.body.versionCode')
-          mark_source "$i"
-          echo "  using RuStore: appId=$appid versionCode=$RS_VCODE"; return 0
+        if resolve_rustore "$i"; then
+          return 0
         fi
         echo "  RuStore resolve failed" ;;
       *) echo "  unknown source type '$type'" ;;
