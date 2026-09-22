@@ -53,7 +53,9 @@ the upstream app version **or** the Morphe patches bundle changed since its last
    `versionCode` up front; for direct URLs, `HEAD` and compare `ETag`/`Content-Length`.
    If nothing changed, skip without downloading.
 2. **Download & version** — fetch the APK (browser User-Agent) and read
-   `versionCode`/`versionName` with the runner's `aapt2`. Skip if not newer.
+   `versionCode`/`versionName` with the runner's `aapt2`. An older `versionCode`
+   never replaces the published APK, including during patch-bundle rebuilds.
+   The same version may rebuild when the patch bundle changed.
 3. **Patch or qualify** — exact listed targets run normally. An unlisted
    `versionName` + `versionCode` runs once with `--force`, but publication is disabled.
    In both paths, the result report must contain exactly the selected patch multiset;
