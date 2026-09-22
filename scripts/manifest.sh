@@ -9,6 +9,10 @@
 # Optional: RELEASE_TAG, PUBLICATIONS_DIR (default "publications").
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=version_policy.sh
+source "$SCRIPT_DIR/version_policy.sh"
+
 CONFIG="${CONFIG:?CONFIG required}"
 REPOSITORY="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
 RELEASE_TAG="${RELEASE_TAG:-$(jq -r '.release_tag // empty' "$CONFIG")}"
@@ -236,6 +240,8 @@ for state in "${STATE_FILES[@]}"; do
   asset=$(jq -r '.asset' "$state")
   expected=$(jq -r '.output_sha256' "$state")
   version=$(jq -r '.version_name' "$state")
+  candidate_code=$(jq -r '.version_code' "$state")
+  published_code=$(jq -r --arg id "$id" '.[$id].version_code // 0' <<<"$APPS")
   candidate="$PUBLICATIONS_DIR/candidate/$asset"
   configured_package=$(jq -r --arg id "$id" '.apps[] | select(.id == $id) | .package' "$CONFIG")
   state_package=$(jq -r '.package' "$state")
@@ -250,6 +256,10 @@ for state in "${STATE_FILES[@]}"; do
   fi
   if [ -n "${SEEN_APPS[$id]:-}" ] || [ -n "${SEEN_ASSETS[$asset]:-}" ]; then
     echo "publisher: duplicate app or asset in workflow candidates: $id / $asset" >&2
+    exit 1
+  fi
+  if [ "$(version_action "$candidate_code" "$published_code" true)" = "reject-rollback" ]; then
+    echo "publisher: refusing $id versionCode $candidate_code because published versionCode is $published_code" >&2
     exit 1
   fi
   if [ ! -f "$candidate" ]; then

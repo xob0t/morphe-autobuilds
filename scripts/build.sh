@@ -22,6 +22,10 @@
 #   GITHUB_OUTPUT  set by Actions; receives built=/version=/failed= (optional)
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=version_policy.sh
+source "$SCRIPT_DIR/version_policy.sh"
+
 APP_ID="${APP_ID:?APP_ID required}"
 CONFIG="${CONFIG:?CONFIG required}"
 RELEASE_TAG="${RELEASE_TAG:?RELEASE_TAG required}"
@@ -239,11 +243,24 @@ group "Resolve source + change check"
 resolve_source
 ETAG=""; LASTMOD=""; CLEN=""
 if [ "$RESOLVED_TYPE" = "rustore" ]; then
-  # RuStore hands us the versionCode without downloading — the best change signal.
-  if [ "$REBUILD" != "true" ] && [ -n "$RS_VCODE" ] && [ "$RS_VCODE" -le "$PREV_CODE" ]; then
-    endg; log "$NAME: RuStore versionCode $RS_VCODE not newer than $PREV_CODE, patches unchanged — skipping."
-    out built false; exit 0
-  fi
+  # RuStore hands us the versionCode without downloading. Different generated
+  # device IDs can land in different staged-rollout cohorts, so an older result
+  # must never replace the published APK, even during a patch-bundle rebuild.
+  VERSION_ACTION=$(version_action "$RS_VCODE" "$PREV_CODE" "$REBUILD")
+  case "$VERSION_ACTION" in
+    reject-rollback)
+      endg
+      echo "::warning::$NAME: RuStore versionCode $RS_VCODE is older than published $PREV_CODE; keeping the published APK."
+      out built false
+      exit 0
+      ;;
+    skip-unchanged)
+      endg
+      log "$NAME: RuStore versionCode $RS_VCODE not newer than $PREV_CODE, patches unchanged — skipping."
+      out built false
+      exit 0
+      ;;
+  esac
 else
   HEADERS=$(curl -fsSIL -A "$UA" "$SRC_URL" 2>/dev/null || true)
   # ETag values arrive wrapped in literal double-quotes (and may be weak: W/"…");
@@ -311,9 +328,23 @@ if [ "$PKG" != "$PACKAGE" ]; then
   echo "::error::Downloaded package '$PKG' != expected '$PACKAGE' — source URL may have changed." >&2
   exit 1
 fi
-if [ "$REBUILD" != "true" ] && [ "${VCODE:-0}" -le "$PREV_CODE" ]; then
-  log "$NAME: versionCode $VCODE not newer than $PREV_CODE, patches unchanged — skipping."; out built false; exit 0
+if ! [[ "$VCODE" =~ ^[0-9]+$ ]]; then
+  echo "::error::Downloaded APK has an invalid versionCode '$VCODE'." >&2
+  exit 1
 fi
+VERSION_ACTION=$(version_action "$VCODE" "$PREV_CODE" "$REBUILD")
+case "$VERSION_ACTION" in
+  reject-rollback)
+    echo "::warning::$NAME: downloaded versionCode $VCODE is older than published $PREV_CODE; keeping the published APK."
+    out built false
+    exit 0
+    ;;
+  skip-unchanged)
+    log "$NAME: versionCode $VCODE not newer than $PREV_CODE, patches unchanged — skipping."
+    out built false
+    exit 0
+    ;;
+esac
 
 APK_SHA256=$(sha256sum "$APK" | cut -d' ' -f1)
 MPP_SHA256=$(sha256sum "$MPP" | cut -d' ' -f1)
