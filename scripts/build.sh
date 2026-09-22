@@ -246,7 +246,11 @@ if [ "$RESOLVED_TYPE" = "rustore" ]; then
   # RuStore hands us the versionCode without downloading. Different generated
   # device IDs can land in different staged-rollout cohorts, so an older result
   # must never replace the published APK, even during a patch-bundle rebuild.
-  VERSION_ACTION=$(version_action "$RS_VCODE" "$PREV_CODE" "$REBUILD")
+  if ! VERSION_ACTION=$(version_action "$RS_VCODE" "$PREV_CODE" "$REBUILD"); then
+    endg
+    echo "::error::$NAME: cannot compare RuStore versionCode '$RS_VCODE' with published '$PREV_CODE'." >&2
+    exit 1
+  fi
   case "$VERSION_ACTION" in
     reject-rollback)
       endg
@@ -328,11 +332,10 @@ if [ "$PKG" != "$PACKAGE" ]; then
   echo "::error::Downloaded package '$PKG' != expected '$PACKAGE' — source URL may have changed." >&2
   exit 1
 fi
-if ! [[ "$VCODE" =~ ^[0-9]+$ ]]; then
-  echo "::error::Downloaded APK has an invalid versionCode '$VCODE'." >&2
+if ! VERSION_ACTION=$(version_action "$VCODE" "$PREV_CODE" "$REBUILD"); then
+  echo "::error::$NAME: cannot compare downloaded versionCode '$VCODE' with published '$PREV_CODE'." >&2
   exit 1
 fi
-VERSION_ACTION=$(version_action "$VCODE" "$PREV_CODE" "$REBUILD")
 case "$VERSION_ACTION" in
   reject-rollback)
     echo "::warning::$NAME: downloaded versionCode $VCODE is older than published $PREV_CODE; keeping the published APK."

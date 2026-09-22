@@ -258,7 +258,11 @@ for state in "${STATE_FILES[@]}"; do
     echo "publisher: duplicate app or asset in workflow candidates: $id / $asset" >&2
     exit 1
   fi
-  if [ "$(version_action "$candidate_code" "$published_code" true)" = "reject-rollback" ]; then
+  if ! VERSION_ACTION=$(version_action "$candidate_code" "$published_code" true); then
+    echo "publisher: invalid versionCode for $id (candidate=$candidate_code, published=$published_code)" >&2
+    exit 1
+  fi
+  if [ "$VERSION_ACTION" = "reject-rollback" ]; then
     echo "publisher: refusing $id versionCode $candidate_code because published versionCode is $published_code" >&2
     exit 1
   fi
