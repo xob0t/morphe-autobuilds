@@ -466,7 +466,19 @@ if ! jq -e '(.success // true) == true and (.appliedPatches | type == "array")' 
   out built false; out failed true; out version "$VNAME"; out failed_patches "invalid-result-report"; exit 1
 fi
 
-mapfile -t APPLIED_PATCHES < <(jq -r '.appliedPatches[]?.name // empty' "$WORK/result.json")
+# morphe-cli <= 1.18 wrote appliedPatches as objects with a name; 1.19+ writes
+# plain name strings. Reject any other shape instead of reading an empty list.
+if ! APPLIED_LIST=$(jq -r '.appliedPatches[] |
+    if type == "string" then .
+    elif type == "object" and (.name | type) == "string" then .name
+    else error("unrecognized appliedPatches entry: \(tojson)") end' "$WORK/result.json"); then
+  echo "::error::$NAME $VNAME produced a patch result report with unreadable appliedPatches." >&2
+  out built false; out failed true; out version "$VNAME"; out failed_patches "invalid-result-report"; exit 1
+fi
+APPLIED_PATCHES=()
+if [ -n "$APPLIED_LIST" ]; then
+  mapfile -t APPLIED_PATCHES <<<"$APPLIED_LIST"
+fi
 SELECTED_FILE="$WORK/selected-patches.txt"
 APPLIED_FILE="$WORK/applied-patches.txt"
 printf '%s\n' "${SELECTED_PATCHES[@]}" | sort >"$SELECTED_FILE"
