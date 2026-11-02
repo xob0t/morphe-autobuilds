@@ -25,6 +25,8 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=version_policy.sh
 source "$SCRIPT_DIR/version_policy.sh"
+# shellcheck source=asset_name.sh
+source "$SCRIPT_DIR/asset_name.sh"
 
 APP_ID="${APP_ID:?APP_ID required}"
 CONFIG="${CONFIG:?CONFIG required}"
@@ -427,7 +429,8 @@ echo "Enabling $ENABLED_PATCH_COUNT of ${#ALL_PATCHES[@]} compatible patches."
 endg
 
 # ---- 5. patch (this is the test) ---------------------------------------------
-OUT="$WORK/${APP_ID}-${VNAME}-morphe.apk"
+ASSET=$(apk_asset_name "$APP_ID" "$VNAME" "$CUR_PATCHES")
+OUT="$WORK/$ASSET"
 group "Patch $NAME $VNAME"
 COMPATIBILITY_ARGS=()
 if [ "$QUALIFICATION" = "true" ]; then
@@ -545,7 +548,6 @@ if [ "$QUALIFICATION" = "true" ]; then
 fi
 
 OUT_SHA256=$(sha256sum "$OUT" | cut -d' ' -f1)
-ASSET="${APP_ID}-${VNAME}-morphe.apk"
 if [ -z "$CANDIDATE_DIR" ]; then
   echo "::error::CANDIDATE_DIR is required for a publishable build." >&2
   out built false; exit 1
