@@ -12,6 +12,10 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=version_policy.sh
 source "$SCRIPT_DIR/version_policy.sh"
+# shellcheck source=asset_name.sh
+source "$SCRIPT_DIR/asset_name.sh"
+# shellcheck source=obtainium.sh
+source "$SCRIPT_DIR/obtainium.sh"
 
 CONFIG="${CONFIG:?CONFIG required}"
 REPOSITORY="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
@@ -133,16 +137,18 @@ download_and_verify() {
 }
 
 render_notes() {
-  local manifest=$1 destination=$2 updated
+  local manifest=$1 destination=$2 updated obtainium
   updated=$(jq -r '.updated_at // empty' "$manifest")
   [ -n "$updated" ] || updated=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  obtainium=$(obtainium_links "$CONFIG" "$REPOSITORY" \
+    | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries')
   {
     echo "Latest [Morphe](https://morphe.software)-patched APKs, rebuilt automatically whenever an app **or** the patches bundle updates. **Every** compatible patch is enabled (app-specific + universal); APKs are re-signed with a stable per-app key so updates install over previous Morphe builds."
     echo
-    echo "| App | Version | Download | Patches | Source | Bundle | Built (UTC) |"
-    echo "|-----|---------|:-------:|:------:|:------:|--------|-------------|"
-    jq -r --arg dl "$DL" '.apps | to_entries | sort_by(.value.name)[] | .value
-           | "| \(.name) | `\(.version_name)` | [⬇ APK](\($dl)/\(.asset)) | \(.patches_enabled) | \(.source // "?") | `\(.patches_version)` | \(.built_at) |"' \
+    echo "| App | Version | Download | Obtainium | Patches | Source | Bundle | Built (UTC) |"
+    echo "|-----|---------|:-------:|:---------:|:------:|:------:|--------|-------------|"
+    jq -r --arg dl "$DL" --argjson obtainium "$obtainium" '.apps | to_entries | sort_by(.value.name)[] | .value
+           | "| \(.name) | `\(.version_name)` | [⬇ APK](\($dl)/\(.asset)) | \(if $obtainium[.app] then "[Add](\($obtainium[.app]))" else "—" end) | \(.patches_enabled) | \(.source // "?") | `\(.patches_version)` | \(.built_at) |"' \
        "$manifest"
     echo
     echo "Each APK is the unmodified upstream binary (from RuStore or the vendor's own CDN), patched and re-signed. Machine-readable details: [\`manifest.json\`]($DL/manifest.json). Patches: [xob0t/morphe-patches](https://github.com/xob0t/morphe-patches)."
@@ -232,6 +238,7 @@ for state in "${STATE_FILES[@]}"; do
     and (.app | type == "string" and length > 0)
     and (.version_name | type == "string" and length > 0)
     and (.version_code | type == "number")
+    and (.patches_version | type == "string" and length > 0)
     and (.asset | type == "string" and test("^[0-9A-Za-z._+-]+\\.apk$"))
     and (.output_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
   ' "$state" >/dev/null
@@ -240,6 +247,7 @@ for state in "${STATE_FILES[@]}"; do
   asset=$(jq -r '.asset' "$state")
   expected=$(jq -r '.output_sha256' "$state")
   version=$(jq -r '.version_name' "$state")
+  patches_version=$(jq -r '.patches_version' "$state")
   candidate_code=$(jq -r '.version_code' "$state")
   published_code=$(jq -r --arg id "$id" '.[$id].version_code // 0' <<<"$APPS")
   candidate="$PUBLICATIONS_DIR/candidate/$asset"
@@ -250,8 +258,8 @@ for state in "${STATE_FILES[@]}"; do
     echo "publisher: state package does not match configured app $id" >&2
     exit 1
   fi
-  if [ "$asset" != "${id}-${version}-morphe.apk" ]; then
-    echo "publisher: unexpected clean asset name '$asset' for $id $version" >&2
+  if [ "$asset" != "$(apk_asset_name "$id" "$version" "$patches_version")" ]; then
+    echo "publisher: unexpected clean asset name '$asset' for $id $version (patches $patches_version)" >&2
     exit 1
   fi
   if [ -n "${SEEN_APPS[$id]:-}" ] || [ -n "${SEEN_ASSETS[$asset]:-}" ]; then

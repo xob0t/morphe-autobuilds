@@ -26,9 +26,38 @@ Morphe builds without uninstalling.
 | Ozon        | RuStore store API  | — (no official direct URL)            |
 | Wildberries | RuStore store API  | — (no official direct URL)            |
 
-The public `latest` release keeps one clean APK name per app version, such as
-`<app>-<version>-morphe.apk`. Candidates stay off the release as short-lived
-Actions artifacts until the serialized publisher verifies and activates them.
+The public `latest` release keeps one clean APK name per app build:
+`<app>-<versionName>-p<patchesVersion>-morphe.apk`, for example
+`avito-236.1-p1.12.0-morphe.apk`. The patch bundle version is part of the name so a
+patch-only rebuild of the same app version is visible to update checkers. Candidates
+stay off the release as short-lived Actions artifacts until the serialized publisher
+verifies and activates them.
+
+## Updates with Obtainium
+
+Tap a link on your phone to add the app to [Obtainium](https://obtainium.imranr.dev)
+with everything preconfigured:
+
+<!-- obtainium:start -->
+| App | Obtainium |
+|-----|-----------|
+| Avito | [Add to Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fapp%2F%257B%2522id%2522%253A%2522com.avito.android%2522%252C%2522url%2522%253A%2522https%253A%252F%252Fgithub.com%252Fxob0t%252Fmorphe-autobuilds%252Freleases%252Fexpanded_assets%252Flatest%2522%252C%2522author%2522%253A%2522xob0t%2522%252C%2522name%2522%253A%2522Avito%2520%2528Morphe%2529%2522%252C%2522preferredApkIndex%2522%253A0%252C%2522additionalSettings%2522%253A%2522%257B%255C%2522customLinkFilterRegex%255C%2522%253A%255C%2522%252Favito-%255B%255E%252F%255D%252B-morphe%255C%255C%255C%255C.apk%2524%255C%2522%252C%255C%2522versionExtractionRegEx%255C%2522%253A%255C%2522%252Favito-%2528%255B%255E%252F%255D%252B%2529-morphe%255C%255C%255C%255C.apk%2524%255C%2522%252C%255C%2522matchGroupToUse%255C%2522%253A%255C%25221%255C%2522%252C%255C%2522versionDetection%255C%2522%253Afalse%257D%2522%252C%2522overrideSource%2522%253A%2522HTML%2522%257D) |
+| T-Bank | [Add to Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fapp%2F%257B%2522id%2522%253A%2522com.idamob.tinkoff.android%2522%252C%2522url%2522%253A%2522https%253A%252F%252Fgithub.com%252Fxob0t%252Fmorphe-autobuilds%252Freleases%252Fexpanded_assets%252Flatest%2522%252C%2522author%2522%253A%2522xob0t%2522%252C%2522name%2522%253A%2522T-Bank%2520%2528Morphe%2529%2522%252C%2522preferredApkIndex%2522%253A0%252C%2522additionalSettings%2522%253A%2522%257B%255C%2522customLinkFilterRegex%255C%2522%253A%255C%2522%252Ftbank-%255B%255E%252F%255D%252B-morphe%255C%255C%255C%255C.apk%2524%255C%2522%252C%255C%2522versionExtractionRegEx%255C%2522%253A%255C%2522%252Ftbank-%2528%255B%255E%252F%255D%252B%2529-morphe%255C%255C%255C%255C.apk%2524%255C%2522%252C%255C%2522matchGroupToUse%255C%2522%253A%255C%25221%255C%2522%252C%255C%2522versionDetection%255C%2522%253Afalse%257D%2522%252C%2522overrideSource%2522%253A%2522HTML%2522%257D) |
+| Ozon | [Add to Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fapp%2F%257B%2522id%2522%253A%2522ru.ozon.app.android%2522%252C%2522url%2522%253A%2522https%253A%252F%252Fgithub.com%252Fxob0t%252Fmorphe-autobuilds%252Freleases%252Fexpanded_assets%252Flatest%2522%252C%2522author%2522%253A%2522xob0t%2522%252C%2522name%2522%253A%2522Ozon%2520%2528Morphe%2529%2522%252C%2522preferredApkIndex%2522%253A0%252C%2522additionalSettings%2522%253A%2522%257B%255C%2522customLinkFilterRegex%255C%2522%253A%255C%2522%252Fozon-%255B%255E%252F%255D%252B-morphe%255C%255C%255C%255C.apk%2524%255C%2522%252C%255C%2522versionExtractionRegEx%255C%2522%253A%255C%2522%252Fozon-%2528%255B%255E%252F%255D%252B%2529-morphe%255C%255C%255C%255C.apk%2524%255C%2522%252C%255C%2522matchGroupToUse%255C%2522%253A%255C%25221%255C%2522%252C%255C%2522versionDetection%255C%2522%253Afalse%257D%2522%252C%2522overrideSource%2522%253A%2522HTML%2522%257D) |
+| Wildberries | [Add to Obtainium](https://apps.obtainium.imranr.dev/redirect?r=obtainium%3A%2F%2Fapp%2F%257B%2522id%2522%253A%2522com.wildberries.ru%2522%252C%2522url%2522%253A%2522https%253A%252F%252Fgithub.com%252Fxob0t%252Fmorphe-autobuilds%252Freleases%252Fexpanded_assets%252Flatest%2522%252C%2522author%2522%253A%2522xob0t%2522%252C%2522name%2522%253A%2522Wildberries%2520%2528Morphe%2529%2522%252C%2522preferredApkIndex%2522%253A0%252C%2522additionalSettings%2522%253A%2522%257B%255C%2522customLinkFilterRegex%255C%2522%253A%255C%2522%252Fwildberries-%255B%255E%252F%255D%252B-morphe%255C%255C%255C%255C.apk%2524%255C%2522%252C%255C%2522versionExtractionRegEx%255C%2522%253A%255C%2522%252Fwildberries-%2528%255B%255E%252F%255D%252B%2529-morphe%255C%255C%255C%255C.apk%2524%255C%2522%252C%255C%2522matchGroupToUse%255C%2522%253A%255C%25221%255C%2522%252C%255C%2522versionDetection%255C%2522%253Afalse%257D%2522%252C%2522overrideSource%2522%253A%2522HTML%2522%257D) |
+<!-- obtainium:end -->
+
+The same links are in the release notes. Each one sets up Obtainium's HTML source on
+the release's asset list (the shared `latest` tag can't tell apps apart), picks the
+app's APK by file name, and reads `<versionName>-p<patchesVersion>` from it as the
+version. OS version detection is off because that string never equals the installed
+`versionName`. Obtainium therefore offers an update when either the app or the patch
+bundle changes. On first import it may offer the current build once, since it can't
+match an already installed Morphe build to a file name.
+
+The table is generated from `config/apps.json`; after changing apps, run
+`bash scripts/obtainium.sh` and paste its output between the markers.
+`tests/obtainium_test.sh` fails if the two drift apart.
 
 **Sources.** Each app has an ordered `sources` list, tried in turn until one resolves
 an APK — so a broken store *or* a broken vendor URL doesn't stop the build. RuStore is
@@ -148,7 +177,8 @@ fails.
 
 Add an entry to `config/apps.json` (id, package, source url + UA, `keystore_secret`,
 optional `disable` list) and add the keystore secret. The app must have patches in
-the configured `patches_repo` bundle.
+the configured `patches_repo` bundle. The id must be lowercase letters and digits
+only (it prefixes the asset name), and the README Obtainium table must be regenerated.
 
 ## Disclaimer
 
