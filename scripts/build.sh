@@ -439,7 +439,7 @@ fi
 set +e
 java -jar "$MORPHE_CLI" patch \
   "${COMPATIBILITY_ARGS[@]}" \
-  --bytecode-mode FULL \
+  --bytecode-mode STRIP_SAFE \
   --exclusive \
   "${ENABLE_ARGS[@]}" \
   --patches="$MPP" \
